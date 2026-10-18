@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/sebasBetancourt/relay/internal/config"
@@ -10,7 +15,7 @@ import (
 )
 
 func main() {
-	_ = godotenv.Load() 
+	_ = godotenv.Load()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -18,13 +23,32 @@ func main() {
 	}
 	log := config.NewLogger(cfg.LogLevel)
 
-	mux := relayhttp.NewRouter()
-	// RequestID outermost so Logger/Recover see the id in context.
-	handler := relayhttp.RequestID(relayhttp.Recover(log)(relayhttp.Logger(log)(mux)))
-
-	log.Info("starting relay api", "port", cfg.Port)
-	if err := http.ListenAndServe(":"+cfg.Port, handler); err != nil {
-		log.Error("server stopped", "err", err)
-		os.Exit(1)
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           relayhttp.NewRouter(log),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
+
+	go func() {
+		log.Info("starting relay api", "port", cfg.Port)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("server error", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	log.Info("shutting down")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Error("forced shutdown", "err", err)
+	}
+	log.Info("bye")
 }
