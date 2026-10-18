@@ -14,7 +14,7 @@ func NewRouter(log *slog.Logger, db *pgxpool.Pool) http.Handler {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -26,7 +26,7 @@ func NewRouter(log *slog.Logger, db *pgxpool.Pool) http.Handler {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ready"))
+		_, _ = w.Write([]byte("ready"))
 	})
 
 	// Outer runs first. RequestID must wrap Recover/Logger so they see the id in context.
