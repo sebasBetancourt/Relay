@@ -18,8 +18,12 @@ func main() {
 	}
 	log := config.NewLogger(cfg.LogLevel)
 
+	mux := relayhttp.NewRouter()
+	// RequestID outermost so Logger/Recover see the id in context.
+	handler := relayhttp.RequestID(relayhttp.Recover(log)(relayhttp.Logger(log)(mux)))
+
 	log.Info("starting relay api", "port", cfg.Port)
-	if err := http.ListenAndServe(":"+cfg.Port, relayhttp.NewRouter()); err != nil {
+	if err := http.ListenAndServe(":"+cfg.Port, handler); err != nil {
 		log.Error("server stopped", "err", err)
 		os.Exit(1)
 	}
