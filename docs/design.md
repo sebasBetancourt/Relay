@@ -186,7 +186,7 @@ sequenceDiagram
 | `tenant_id` | `uuid` | FK → `tenants(id)` **ON DELETE CASCADE** (if the tenant goes, its accounts go). |
 | `provider` | `enum` (`google`, `microsoft`) | Enum so the DB rejects bad values — not free text. |
 | `provider_account_id` | `text` | Stable id (or email) of the account at Google/MS. |
-| `status` | `enum` (`active`, `revoked`, `disconnected`) | Keep it small for v0.1. Expiry is handled via tokens/`expires_at`, not a separate account status. `error` can wait until you need it. |
+| `status` | `enum` (`active`, `revoked`, `disconnected`, `error`) | Keep it small for v0.1. Use `error` when refresh succeeded at the provider but saving the new tokens failed. Expiry lives on tokens/`expires_at`, not as a status. |
 | `created_at` | `timestamptz` | |
 
 **UNIQUE:** `UNIQUE (provider, provider_account_id)` — same Google/MS account cannot be linked twice as two rows.
@@ -232,3 +232,16 @@ Optional: periodic job deletes rows where `expires_at < now()` or `used_at IS NO
 | `connected_accounts.tenant_id` | `tenants.id` | **CASCADE** |
 | `oauth_tokens.account_id` | `connected_accounts.id` | **CASCADE** |
 | `oauth_states.tenant_id` | `tenants.id` | **CASCADE** |
+
+
+### Risks
+
+| Risk | Impact | Mitigation |
+| --- | --- | --- |
+| Token leak (DB stolen) | Attacker can call Google/MS as the user | Encrypt at rest (AES-256-GCM), key outside the DB; mass revoke + anomaly monitoring |
+| Encryption key lost or leaked | Cannot decrypt tokens; full data exposure if leaked | v0.1: key in env/secret manager, never in DB or repo; KMS + rotation later |
+| Microsoft refresh token rotation (save fails) | Old refresh invalid; API thinks it still has access | Persist new refresh in a transaction before using the new access token; on save failure mark account `error` and stop |
+| User revokes access in Google/MS | Calls fail with `invalid_grant` | Mark account `revoked`, delete tokens, return **409** (see Request flow §7) |
+| Provider rate limits (429) | Client errors / degraded UX | Exponential backoff honoring `Retry-After`; cache and queues in v0.2 |
+| Google doesn't return refresh_token | Cannot refresh; reconnect required often | Request `access_type=offline` and `prompt=consent` |
+| CSRF / replay on callback | Attacker links their provider account to a victim tenant | One-time `state` with ~10 min TTL + PKCE |
