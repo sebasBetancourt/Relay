@@ -12,6 +12,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/sebasBetancourt/relay/internal/config"
 	relayhttp "github.com/sebasBetancourt/relay/internal/http"
+	"github.com/sebasBetancourt/relay/internal/store"
 )
 
 func main() {
@@ -23,9 +24,16 @@ func main() {
 	}
 	log := config.NewLogger(cfg.LogLevel)
 
+	pool, err := store.NewPool(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		log.Error("db connect failed", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           relayhttp.NewRouter(log),
+		Handler:           relayhttp.NewRouter(log, pool),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
