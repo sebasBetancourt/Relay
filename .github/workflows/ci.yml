@@ -40,9 +40,11 @@ jobs:
         run: go vet ./...
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        # v6 + "latest" installs golangci-lint v1 (Go ≤1.24 binary), which cannot
+        # lint modules with `go 1.25`. Action v8 + golangci-lint v2.15+ is built with Go ≥1.25.
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.15.0
 
       - name: Run migrations
         run: |
