@@ -1,1 +1,39 @@
+# Env / secrets
 .env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Go build / test
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+coverage.html
+vendor/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+
+# Logs / temp
+*.log
+tmp/
+temp/
+
+# Docker (local overrides only; keep Dockerfile & compose tracked)
+docker-compose.override.yml
