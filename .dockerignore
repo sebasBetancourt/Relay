@@ -1,0 +1,14 @@
+.env
+.env.*
+.git
+docs
+*.md
+migrations
+bin/
+dist/
+coverage.out
+coverage.html
+tmp/
+temp/
+.idea/
+.vscode/

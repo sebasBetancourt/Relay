@@ -15,5 +15,17 @@ services:
       timeout: 3s
       retries: 5
 
+  api:
+    build: .
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgres://relay:relay@postgres:5432/relay?sslmode=disable
+      LOG_LEVEL: info
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pgdata:
