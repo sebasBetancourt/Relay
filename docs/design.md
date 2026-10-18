@@ -165,3 +165,70 @@ sequenceDiagram
    | `location` | Optional |
    | `organizer` | Optional (email / name) |
    | `provider` | `google` or `microsoft` |
+
+### Data model
+
+#### tenants
+
+| column | type | notes |
+| --- | --- | --- |
+| `id` | `uuid` | PK. Prefer uuid over serial: random, hard to guess, better for multi-tenant URLs/APIs. |
+| `name` | `text` | Display name of the tenant. |
+| `api_key_hash` | `bytea` or `text` | **SHA-256** of the raw API key, **UNIQUE**. Never store the key itself. On each request: hash the incoming key → look up the tenant in O(1). Do **not** use bcrypt/argon2: they are slow on purpose and use a per-hash salt, so you cannot search by hash and would have to check every row. Those belong to human-typed passwords; an API key is long and random (≥32 bytes), so SHA-256 is enough. |
+| `key_prefix` | `text` | Optional. Public snippet for logs/UI (e.g. `rly_ab12`) without exposing the full key. |
+| `created_at` | `timestamptz` | |
+
+#### connected_accounts
+
+| column | type | notes |
+| --- | --- | --- |
+| `id` | `uuid` | PK. |
+| `tenant_id` | `uuid` | FK → `tenants(id)` **ON DELETE CASCADE** (if the tenant goes, its accounts go). |
+| `provider` | `enum` (`google`, `microsoft`) | Enum so the DB rejects bad values — not free text. |
+| `provider_account_id` | `text` | Stable id (or email) of the account at Google/MS. |
+| `status` | `enum` (`active`, `revoked`, `disconnected`) | Keep it small for v0.1. Expiry is handled via tokens/`expires_at`, not a separate account status. `error` can wait until you need it. |
+| `created_at` | `timestamptz` | |
+
+**UNIQUE:** `UNIQUE (provider, provider_account_id)` — same Google/MS account cannot be linked twice as two rows.
+
+If two different tenants **may** connect the same provider account, use `UNIQUE (tenant_id, provider, provider_account_id)` instead.
+
+> Do not put UNIQUE on `(id, provider_account_id)`: `id` is already unique alone, so that constraint never blocks duplicates.
+
+A tenant has **N** connected accounts (Google and Microsoft are separate rows). Each account has **one** token row (see below).
+
+#### oauth_tokens
+
+| column | type | notes |
+| --- | --- | --- |
+| `account_id` | `uuid` | **PK and FK** → `connected_accounts(id)` **ON DELETE CASCADE**. **1:1** with the account — not 1:N. Google and Microsoft are different `connected_accounts` rows, each with its own tokens. |
+| `access_token_enc` | `bytea` | Ciphertext from AES-256-GCM. `bytea` is the **column type** (raw bytes), not the encryption algorithm. |
+| `refresh_token_enc` | `bytea` | Same: AES-256-GCM ciphertext stored as bytes. |
+| `access_nonce` | `bytea` | ~12 random bytes for AES-GCM. Required to decrypt; must be unique per encryption under the same key. One nonce per ciphertext. |
+| `refresh_nonce` | `bytea` | Same for the refresh token ciphertext. |
+| `expires_at` | `timestamptz` | When the **access** token expires (drives silent refresh). |
+| `scopes` | `text[]` | Scopes the user **actually** granted (may be fewer than requested), e.g. `{calendar.readonly}`. |
+| `updated_at` | `timestamptz` | Updated on every refresh (Microsoft rotates refresh every time). |
+
+#### oauth_states
+
+Short-lived rows from connect step 1 (~10 min). Used only until callback.
+
+| column | type | notes |
+| --- | --- | --- |
+| `state` | `text` | PK. Random CSRF value sent to the provider and checked on callback. |
+| `tenant_id` | `uuid` | FK → `tenants(id)` **ON DELETE CASCADE**. Who started connect — so the callback knows which tenant owns the new account. |
+| `provider` | `enum` (`google`, `microsoft`) | Which provider to exchange the `code` with. |
+| `code_verifier` | `text` | PKCE secret sent in the token exchange. Lives ~10 minutes; plaintext is acceptable, encrypting is nicer. |
+| `expires_at` | `timestamptz` | Validity window (~10 min). |
+| `used_at` | `timestamptz` | NULL until consumed. Set on successful callback so the same `state` cannot be reused (replay). |
+
+Optional: periodic job deletes rows where `expires_at < now()` or `used_at IS NOT NULL`.
+
+#### FK / delete summary
+
+| Child | Parent | ON DELETE |
+| --- | --- | --- |
+| `connected_accounts.tenant_id` | `tenants.id` | **CASCADE** |
+| `oauth_tokens.account_id` | `connected_accounts.id` | **CASCADE** |
+| `oauth_states.tenant_id` | `tenants.id` | **CASCADE** |
