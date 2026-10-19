@@ -175,7 +175,7 @@ sequenceDiagram
 | `id` | `uuid` | PK. Prefer uuid over serial: random, hard to guess, better for multi-tenant URLs/APIs. |
 | `name` | `text` | Display name of the tenant. |
 | `api_key_hash` | `bytea` or `text` | **SHA-256** of the raw API key, **UNIQUE**. Never store the key itself. On each request: hash the incoming key → look up the tenant in O(1). Do **not** use bcrypt/argon2: they are slow on purpose and use a per-hash salt, so you cannot search by hash and would have to check every row. Those belong to human-typed passwords; an API key is long and random (≥32 bytes), so SHA-256 is enough. |
-| `key_prefix` | `text` | Optional. Public snippet for logs/UI (e.g. `rly_ab12`) without exposing the full key. |
+| `key_prefix` | `text` | Public snippet for logs/UI (e.g. `rly_test_xxxxxxxx…`) without exposing the full key. Keys use `rly_live_` / `rly_test_` + entropy + CRC32 checksum; see `internal/apikey` and `docs/secret-scanning.md`. |
 | `created_at` | `timestamptz` | |
 
 #### connected_accounts
