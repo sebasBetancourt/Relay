@@ -35,7 +35,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           relayhttp.NewRouter(log, pool),
+		Handler:           relayhttp.NewRouter(log, pool, store.NewTenants(pool), cfg.Env),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -43,7 +43,7 @@ func main() {
 	}
 
 	go func() {
-		log.Info("starting relay api", "port", cfg.Port)
+		log.Info("starting relay api", "port", cfg.Port, "env", cfg.Env)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server error", "err", err)
 			os.Exit(1)

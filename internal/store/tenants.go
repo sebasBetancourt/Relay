@@ -10,52 +10,60 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ErrNotFound is returned when a lookup matches no row.
-var ErrNotFound = errors.New("not found")
-
-// ErrRevoked is returned when the API key exists but was revoked.
-var ErrRevoked = errors.New("api key revoked")
-
-const (
-	maxTenantNameLen = 200
-	apiKeyCacheTTL   = 5 * time.Second
+var (
+	// ErrNotFound is returned when a lookup matches no row.
+	ErrNotFound = errors.New("not found")
+	// ErrRevoked is returned when an API key exists but was revoked.
+	ErrRevoked = errors.New("api key revoked")
 )
 
-// Tenant is a Relay customer. It never carries API key material.
+const (
+	maxTenantNameLen = 200 // Matches the tenants_name_len CHECK (counts characters, not bytes).
+
+	// tenantCacheTTL bounds how long another instance may keep serving a key
+	// revoked elsewhere. RevokeKey clears the local entry immediately.
+	tenantCacheTTL     = 30 * time.Second
+	maxTenantCacheSize = 10_000
+
+	pgForeignKeyViolation = "23503"
+	pgInvalidTextRepr     = "22P02" // e.g. a tenant id that is not a uuid.
+)
+
+// Tenant is a Relay customer. It never carries the API key or its hash.
+// KeyPrefix is the display prefix of the key used for the lookup (or the
+// first key, on Create).
 type Tenant struct {
 	ID        string
 	Name      string
+	KeyPrefix string
 	CreatedAt time.Time
+}
+
+type cacheEntry struct {
+	tenant    Tenant
+	expiresAt time.Time
 }
 
 type Tenants struct {
 	db *pgxpool.Pool
 
-	mu    sync.Mutex
-	cache map[string]tenantCacheEntry // key_hash → tenant
-	ttl   time.Duration
-}
-
-type tenantCacheEntry struct {
-	tenant  Tenant
-	expires time.Time
+	mu    sync.RWMutex
+	cache map[string]cacheEntry // key: api key hash; only active keys are cached.
 }
 
 func NewTenants(db *pgxpool.Pool) *Tenants {
-	return &Tenants{
-		db:    db,
-		cache: make(map[string]tenantCacheEntry),
-		ttl:   apiKeyCacheTTL,
-	}
+	return &Tenants{db: db, cache: make(map[string]cacheEntry)}
 }
 
-// Create inserts a tenant and its first API key in one transaction.
+// Create inserts a tenant and its first (already hashed) API key in one
+// transaction, so a tenant never exists without a key.
 func (s *Tenants) Create(ctx context.Context, name, apiKeyHash, keyPrefix string) (Tenant, error) {
 	name = strings.TrimSpace(name)
-	if name == "" || utf8.RuneCountInString(name) > maxTenantNameLen {
+	if n := utf8.RuneCountInString(name); n == 0 || n > maxTenantNameLen {
 		return Tenant{}, fmt.Errorf("create tenant: name must be 1-%d characters", maxTenantNameLen)
 	}
 
@@ -63,7 +71,8 @@ func (s *Tenants) Create(ctx context.Context, name, apiKeyHash, keyPrefix string
 	if err != nil {
 		return Tenant{}, fmt.Errorf("create tenant: begin: %w", err)
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck
+	// No-op after a successful Commit.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var t Tenant
 	err = tx.QueryRow(ctx, `
@@ -78,49 +87,79 @@ func (s *Tenants) Create(ctx context.Context, name, apiKeyHash, keyPrefix string
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO api_keys (tenant_id, key_hash, key_prefix)
-		VALUES ($1::uuid, $2, $3)`,
+		VALUES ($1, $2, $3)`,
 		t.ID, apiKeyHash, keyPrefix,
 	)
 	if err != nil {
-		return Tenant{}, fmt.Errorf("create tenant api key: %w", err)
+		return Tenant{}, fmt.Errorf("create tenant: insert key: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return Tenant{}, fmt.Errorf("create tenant: commit: %w", err)
 	}
+	t.KeyPrefix = keyPrefix
 	return t, nil
 }
 
-// AddKey attaches another API key to an existing tenant (rotation / multi-key).
+// AddKey attaches another (already hashed) API key to an existing tenant,
+// e.g. to rotate keys without downtime. Unknown tenant → ErrNotFound.
 func (s *Tenants) AddKey(ctx context.Context, tenantID, apiKeyHash, keyPrefix string) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO api_keys (tenant_id, key_hash, key_prefix)
-		VALUES ($1::uuid, $2, $3)`,
+		VALUES ($1, $2, $3)`,
 		tenantID, apiKeyHash, keyPrefix,
 	)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && (pgErr.Code == pgForeignKeyViolation || pgErr.Code == pgInvalidTextRepr) {
+		return ErrNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("add api key: %w", err)
 	}
 	return nil
 }
 
-// ByAPIKeyHash finds the tenant for an active (non-revoked) key.
-// Hot hashes are cached in memory for a few seconds to avoid hitting Postgres
-// on every authenticated request.
+// RevokeKey marks a key as revoked. Idempotent: revoking twice keeps the
+// first revoked_at. Unknown key → ErrNotFound.
+func (s *Tenants) RevokeKey(ctx context.Context, apiKeyHash string) error {
+	// Drop the cache entry first, so this instance stops trusting the key
+	// even if the UPDATE fails halfway.
+	s.cacheDelete(apiKeyHash)
+
+	tag, err := s.db.Exec(ctx, `
+		UPDATE api_keys
+		SET revoked_at = COALESCE(revoked_at, now())
+		WHERE key_hash = $1`,
+		apiKeyHash,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke api key: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ByAPIKeyHash finds the tenant owning a key: ErrNotFound if the key does
+// not exist, ErrRevoked if it was revoked. Active hits are cached for
+// tenantCacheTTL to keep the DB off the hot path of every request.
 func (s *Tenants) ByAPIKeyHash(ctx context.Context, apiKeyHash string) (Tenant, error) {
 	if t, ok := s.cacheGet(apiKeyHash); ok {
 		return t, nil
 	}
 
-	var t Tenant
-	var revokedAt *time.Time
+	var (
+		t         Tenant
+		revokedAt *time.Time
+	)
 	err := s.db.QueryRow(ctx, `
-		SELECT t.id::text, t.name, t.created_at, k.revoked_at
+		SELECT t.id::text, t.name, k.key_prefix, t.created_at, k.revoked_at
 		FROM api_keys k
 		JOIN tenants t ON t.id = k.tenant_id
 		WHERE k.key_hash = $1`,
 		apiKeyHash,
-	).Scan(&t.ID, &t.Name, &t.CreatedAt, &revokedAt)
+	).Scan(&t.ID, &t.Name, &t.KeyPrefix, &t.CreatedAt, &revokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Tenant{}, ErrNotFound
 	}
@@ -131,55 +170,41 @@ func (s *Tenants) ByAPIKeyHash(ctx context.Context, apiKeyHash string) (Tenant, 
 		return Tenant{}, ErrRevoked
 	}
 
-	// Best-effort; do not fail the request if the touch fails.
-	_, _ = s.db.Exec(ctx, `
-		UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1 AND revoked_at IS NULL`,
-		apiKeyHash,
-	)
-
 	s.cachePut(apiKeyHash, t)
 	return t, nil
 }
 
-// RevokeKey marks a key unusable and drops it from the cache.
-func (s *Tenants) RevokeKey(ctx context.Context, apiKeyHash string) error {
-	tag, err := s.db.Exec(ctx, `
-		UPDATE api_keys
-		SET revoked_at = now()
-		WHERE key_hash = $1 AND revoked_at IS NULL`,
-		apiKeyHash,
-	)
-	if err != nil {
-		return fmt.Errorf("revoke api key: %w", err)
-	}
-	s.cacheDelete(apiKeyHash)
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
 func (s *Tenants) cacheGet(hash string) (Tenant, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
 	e, ok := s.cache[hash]
-	if !ok || time.Now().After(e.expires) {
-		if ok {
-			delete(s.cache, hash)
-		}
+	s.mu.RUnlock()
+	if !ok || time.Now().After(e.expiresAt) {
 		return Tenant{}, false
 	}
 	return e.tenant, true
 }
 
 func (s *Tenants) cachePut(hash string, t Tenant) {
+	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cache[hash] = tenantCacheEntry{tenant: t, expires: time.Now().Add(s.ttl)}
+
+	// Keep memory bounded: sweep expired entries, and if still full start over.
+	if len(s.cache) >= maxTenantCacheSize {
+		for h, e := range s.cache {
+			if now.After(e.expiresAt) {
+				delete(s.cache, h)
+			}
+		}
+		if len(s.cache) >= maxTenantCacheSize {
+			clear(s.cache)
+		}
+	}
+	s.cache[hash] = cacheEntry{tenant: t, expiresAt: now.Add(tenantCacheTTL)}
 }
 
 func (s *Tenants) cacheDelete(hash string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.cache, hash)
+	s.mu.Unlock()
 }

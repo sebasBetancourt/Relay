@@ -9,6 +9,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/sebasBetancourt/relay/internal/apikey"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
@@ -25,7 +26,7 @@ func TestReadyzWithRealDB(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(log, pool)
+	router := NewRouter(log, pool, store.NewTenants(pool), apikey.EnvTest)
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))

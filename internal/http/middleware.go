@@ -11,7 +11,10 @@ import (
 
 type ctxKey int
 
-const requestIDKey ctxKey = iota
+const (
+	requestIDKey ctxKey = iota
+	tenantKey
+)
 
 func RequestIDFromContext(ctx context.Context) string {
 	if id, ok := ctx.Value(requestIDKey).(string); ok {

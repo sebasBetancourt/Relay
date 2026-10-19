@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sebasBetancourt/relay/internal/apikey"
 )
 
 func TestHealthz(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(log, nil) // healthz no usa la DB
+	router := NewRouter(log, nil, nil, apikey.EnvTest) // healthz no usa la DB ni el store
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()

@@ -162,3 +162,43 @@ func TestTenantsRevokeInvalidatesCache(t *testing.T) {
 		t.Fatalf("expected ErrRevoked after revoke, got %v", err)
 	}
 }
+
+func TestTenantsCreateRollsBackOnDuplicateKey(t *testing.T) {
+	s := newTestTenants(t)
+	ctx := context.Background()
+	key := apikey.Generate(apikey.EnvTest)
+	createTenant(t, s, "Original", key)
+
+	name := "Orphan-" + key.KeyPrefix
+	if _, err := s.Create(ctx, name, key.Hash, key.KeyPrefix); err == nil {
+		t.Fatal("expected duplicate key error")
+	}
+	// The transaction must not leave a tenant without a key behind.
+	var n int
+	if err := s.db.QueryRow(ctx, "SELECT count(*) FROM tenants WHERE name = $1", name).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("expected rollback, found %d orphan tenant(s)", n)
+	}
+}
+
+func TestTenantsAddKeyUnknownTenant(t *testing.T) {
+	s := newTestTenants(t)
+	key := apikey.Generate(apikey.EnvTest)
+
+	for _, id := range []string{"00000000-0000-0000-0000-000000000000", "not-a-uuid"} {
+		if err := s.AddKey(context.Background(), id, key.Hash, key.KeyPrefix); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("tenant %q: expected ErrNotFound, got %v", id, err)
+		}
+	}
+}
+
+func TestTenantsRevokeUnknownKey(t *testing.T) {
+	s := newTestTenants(t)
+
+	err := s.RevokeKey(context.Background(), apikey.Hash("rly_does_not_exist"))
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
