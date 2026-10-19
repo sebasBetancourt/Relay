@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+
+	"github.com/sebasBetancourt/relay/internal/apikey"
 )
 
 // encryptionKeySize is the key length AES-256-GCM requires.
@@ -15,6 +17,11 @@ type Config struct {
 	Port        string
 	DatabaseURL string
 	LogLevel    string
+
+	// Env is RELAY_ENV: which API key prefix (rly_live_ / rly_test_) this
+	// process accepts. Required, with no default, so production can never
+	// start in test mode by accident (or the other way around).
+	Env apikey.Env
 
 	GoogleClientID     string
 	GoogleClientSecret string
@@ -49,6 +56,12 @@ func Load() (Config, error) {
 		}
 	}
 
+	env, err := parseEnv(os.Getenv("RELAY_ENV"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("RELAY_ENV: %w", err))
+	}
+	cfg.Env = env
+
 	if err := validateRedirectURL(cfg.GoogleRedirectURL); err != nil {
 		errs = append(errs, fmt.Errorf("GOOGLE_REDIRECT_URL: %w", err))
 	}
@@ -63,6 +76,19 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("invalid config: %w", errors.Join(errs...))
 	}
 	return cfg, nil
+}
+
+// parseEnv is strict on purpose: "prod" or "LIVE" are typos we want to see
+// at startup, not silently mapped to some mode.
+func parseEnv(raw string) (apikey.Env, error) {
+	switch env := apikey.Env(raw); env {
+	case apikey.EnvLive, apikey.EnvTest:
+		return env, nil
+	case "":
+		return "", errors.New(`is required ("live" or "test")`)
+	default:
+		return "", fmt.Errorf(`must be "live" or "test", got %q`, raw)
+	}
 }
 
 func validateRedirectURL(raw string) error {

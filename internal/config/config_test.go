@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/sebasBetancourt/relay/internal/apikey"
 )
 
 var validKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
@@ -15,6 +17,7 @@ func setValidEnv(t *testing.T) {
 	t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
 	t.Setenv("GOOGLE_REDIRECT_URL", "http://localhost:8080/v1/oauth/google/callback")
 	t.Setenv("ENCRYPTION_KEY", validKey)
+	t.Setenv("RELAY_ENV", "test")
 }
 
 func TestLoadValid(t *testing.T) {
@@ -26,6 +29,9 @@ func TestLoadValid(t *testing.T) {
 	}
 	if len(cfg.EncryptionKey) != 32 {
 		t.Fatalf("expected 32-byte key, got %d", len(cfg.EncryptionKey))
+	}
+	if cfg.Env != apikey.EnvTest {
+		t.Fatalf("expected env test, got %q", cfg.Env)
 	}
 	if cfg.Port != "8080" {
 		t.Fatalf("expected default port 8080, got %q", cfg.Port)
@@ -47,6 +53,9 @@ func TestLoadInvalid(t *testing.T) {
 		{"wrong scheme redirect url", "GOOGLE_REDIRECT_URL", "ftp://localhost/cb", "absolute http(s) URL"},
 		{"missing encryption key", "ENCRYPTION_KEY", "", "ENCRYPTION_KEY: is required"},
 		{"encryption key not base64", "ENCRYPTION_KEY", "not base64!!", "must be valid base64"},
+		{"missing relay env", "RELAY_ENV", "", "RELAY_ENV: is required"},
+		{"unknown relay env", "RELAY_ENV", "prod", `must be "live" or "test", got "prod"`},
+		{"uppercase relay env", "RELAY_ENV", "LIVE", `got "LIVE"`},
 		{"encryption key too short", "ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 16)), "got 16"},
 	}
 	for _, tt := range tests {
@@ -92,5 +101,18 @@ func TestLoadNeverLeaksEncryptionKey(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatal("error message leaks the encryption key")
+	}
+}
+
+func TestLoadLiveEnv(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("RELAY_ENV", "live")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Env != apikey.EnvLive {
+		t.Fatalf("expected env live, got %q", cfg.Env)
 	}
 }

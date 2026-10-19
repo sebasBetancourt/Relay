@@ -21,6 +21,7 @@ services:
       PORT: 8080
       DATABASE_URL: postgres://relay:relay@postgres:5432/relay?sslmode=disable
       LOG_LEVEL: info
+      RELAY_ENV: ${RELAY_ENV:?set RELAY_ENV in .env (live or test)}
       # Read from .env; compose refuses to start if any is missing.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID in .env}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?set GOOGLE_CLIENT_SECRET in .env}
