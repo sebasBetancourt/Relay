@@ -178,7 +178,7 @@ sequenceDiagram
 
 #### api_keys
 
-One tenant can have many keys (rotation, multiple environments). Hash is SHA-256 hex of the plaintext (`rly_live_` / `rly_test_` + entropy + CRC32); never store the plaintext. Lookup by hash is O(1) via UNIQUE; the API also keeps a short in-memory cache (≈5s) of hash → tenant so hot traffic does not hit Postgres every request.
+One tenant can have many keys (rotation, multiple environments). Hash is SHA-256 hex of the plaintext (`rly_live_` / `rly_test_` + entropy + CRC32); never store the plaintext. Lookup by hash is O(1) via UNIQUE; the API also keeps a short in-memory cache (30s) of hash → tenant so hot traffic does not hit Postgres every request. Revoking clears the entry on the instance that revoked; other instances may accept the key until their entry expires.
 
 | column | type | notes |
 | --- | --- | --- |
@@ -187,7 +187,7 @@ One tenant can have many keys (rotation, multiple environments). Hash is SHA-256
 | `key_hash` | `text` | SHA-256 hex, **UNIQUE**. |
 | `key_prefix` | `text` | Public snippet for logs/UI (e.g. `rly_test_xxxxxxxx…`). |
 | `created_at` | `timestamptz` | |
-| `last_used_at` | `timestamptz` | Updated on successful auth (best-effort). |
+| `last_used_at` | `timestamptz` | Not written yet. Planned: updated on successful auth, best-effort and throttled so auth never writes on every request. |
 | `revoked_at` | `timestamptz` | NULL = active. Set to revoke without deleting the tenant. |
 
 #### connected_accounts
