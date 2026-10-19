@@ -82,7 +82,7 @@ func Generate(env Env) Key {
 	}
 }
 
-// Hash returns the hex SHA-256 of a plaintext key, as stored in tenants.api_key_hash.
+// Hash returns the hex SHA-256 of a plaintext key, as stored in api_keys.key_hash.
 func Hash(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
 	return hex.EncodeToString(sum[:])

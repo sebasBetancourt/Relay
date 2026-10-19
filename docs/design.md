@@ -173,10 +173,22 @@ sequenceDiagram
 | column | type | notes |
 | --- | --- | --- |
 | `id` | `uuid` | PK. Prefer uuid over serial: random, hard to guess, better for multi-tenant URLs/APIs. |
-| `name` | `text` | Display name of the tenant. |
-| `api_key_hash` | `bytea` or `text` | **SHA-256** of the raw API key, **UNIQUE**. Never store the key itself. On each request: hash the incoming key → look up the tenant in O(1). Do **not** use bcrypt/argon2: they are slow on purpose and use a per-hash salt, so you cannot search by hash and would have to check every row. Those belong to human-typed passwords; an API key is long and random (≥32 bytes), so SHA-256 is enough. |
-| `key_prefix` | `text` | Public snippet for logs/UI (e.g. `rly_test_xxxxxxxx…`) without exposing the full key. Keys use `rly_live_` / `rly_test_` + entropy + CRC32 checksum; see `internal/apikey` and `docs/secret-scanning.md`. |
+| `name` | `text` | Display name. DB enforces `CHECK (char_length(name) BETWEEN 1 AND 200)` so the rule holds even for raw SQL inserts. |
 | `created_at` | `timestamptz` | |
+
+#### api_keys
+
+One tenant can have many keys (rotation, multiple environments). Hash is SHA-256 hex of the plaintext (`rly_live_` / `rly_test_` + entropy + CRC32); never store the plaintext. Lookup by hash is O(1) via UNIQUE; the API also keeps a short in-memory cache (≈5s) of hash → tenant so hot traffic does not hit Postgres every request.
+
+| column | type | notes |
+| --- | --- | --- |
+| `id` | `uuid` | PK. |
+| `tenant_id` | `uuid` | FK → `tenants(id)` **ON DELETE CASCADE**. |
+| `key_hash` | `text` | SHA-256 hex, **UNIQUE**. |
+| `key_prefix` | `text` | Public snippet for logs/UI (e.g. `rly_test_xxxxxxxx…`). |
+| `created_at` | `timestamptz` | |
+| `last_used_at` | `timestamptz` | Updated on successful auth (best-effort). |
+| `revoked_at` | `timestamptz` | NULL = active. Set to revoke without deleting the tenant. |
 
 #### connected_accounts
 
@@ -229,6 +241,7 @@ Optional: periodic job deletes rows where `expires_at < now()` or `used_at IS NO
 
 | Child | Parent | ON DELETE |
 | --- | --- | --- |
+| `api_keys.tenant_id` | `tenants.id` | **CASCADE** |
 | `connected_accounts.tenant_id` | `tenants.id` | **CASCADE** |
 | `oauth_tokens.account_id` | `connected_accounts.id` | **CASCADE** |
 | `oauth_states.tenant_id` | `tenants.id` | **CASCADE** |
