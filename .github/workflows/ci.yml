@@ -55,7 +55,9 @@ jobs:
         run: go test ./... -v -race
 
       - name: Build
-        run: go build -o relay ./cmd/api
+        run: |
+          go build -o relay ./cmd/api
+          go build -o relayctl ./cmd/relayctl
 
   docker:
     runs-on: ubuntu-latest

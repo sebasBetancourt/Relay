@@ -56,7 +56,7 @@ func Load() (Config, error) {
 		}
 	}
 
-	env, err := parseEnv(os.Getenv("RELAY_ENV"))
+	env, err := ParseEnv(os.Getenv("RELAY_ENV"))
 	if err != nil {
 		errs = append(errs, fmt.Errorf("RELAY_ENV: %w", err))
 	}
@@ -78,9 +78,10 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// parseEnv is strict on purpose: "prod" or "LIVE" are typos we want to see
-// at startup, not silently mapped to some mode.
-func parseEnv(raw string) (apikey.Env, error) {
+// ParseEnv validates a RELAY_ENV value. It is strict on purpose: "prod" or
+// "LIVE" are typos we want to see at startup, not silently mapped to some
+// mode. Exported so CLIs (relayctl) apply the exact same rule.
+func ParseEnv(raw string) (apikey.Env, error) {
 	switch env := apikey.Env(raw); env {
 	case apikey.EnvLive, apikey.EnvTest:
 		return env, nil
