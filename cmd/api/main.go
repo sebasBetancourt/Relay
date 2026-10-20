@@ -14,6 +14,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/config"
 	relayhttp "github.com/sebasBetancourt/relay/internal/http"
 	"github.com/sebasBetancourt/relay/internal/store"
+	"github.com/sebasBetancourt/relay/internal/vault"
 )
 
 func main() {
@@ -25,6 +26,15 @@ func main() {
 		os.Exit(1)
 	}
 	log := config.NewLogger(cfg.LogLevel)
+
+	// Built now so a bad ENCRYPTION_KEY stops startup; the OAuth callback
+	// will use it to encrypt tokens.
+	vlt, err := vault.New(cfg.EncryptionKey)
+	if err != nil {
+		log.Error("vault init failed", "err", err)
+		os.Exit(1)
+	}
+	_ = vlt
 
 	pool, err := store.NewPool(context.Background(), cfg.DatabaseURL)
 	if err != nil {
