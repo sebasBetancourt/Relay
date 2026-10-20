@@ -33,5 +33,16 @@ services:
       postgres:
         condition: service_healthy
 
+  # UI for Postgres: docker compose --profile tools up -d adminer
+  # Open http://localhost:8081  → System: PostgreSQL, Server: postgres, User/Pass/DB: relay
+  adminer:
+    image: adminer:4
+    profiles: ["tools"]
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pgdata:

@@ -15,6 +15,8 @@ migrate-down:
 	migrate -path migrations -database "$(DATABASE_URL)" down 1
 
 # Create a tenant and print its API key once: make tenant NAME="Acme"
+# The leading @ keeps make from echoing the recipe into stdout, so
+# `make tenant NAME="Acme" > acme.key` saves only the key.
 tenant:
 	$(if $(NAME),,$(error NAME is required, e.g. make tenant NAME="Acme"))
-	go run ./cmd/relayctl tenant create --name "$(NAME)"
+	@go run ./cmd/relayctl tenant create --name "$(NAME)"
