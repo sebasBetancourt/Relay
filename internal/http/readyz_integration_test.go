@@ -26,7 +26,7 @@ func TestReadyzWithRealDB(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(log, pool, store.NewTenants(pool), apikey.EnvTest)
+	router := NewRouter(Deps{Log: log, DB: pool, Tenants: store.NewTenants(pool), Env: apikey.EnvTest})
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))

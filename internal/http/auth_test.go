@@ -130,7 +130,7 @@ func TestRouterV1(t *testing.T) {
 	key := apikey.Generate(apikey.EnvTest)
 	acme := store.Tenant{ID: "t-1", Name: "Acme", KeyPrefix: key.KeyPrefix}
 	lookup := &fakeLookup{tenants: map[string]store.Tenant{key.Hash: acme}}
-	router := NewRouter(discardLogger(), nil, lookup, apikey.EnvTest)
+	router := NewRouter(Deps{Log: discardLogger(), Tenants: lookup, Env: apikey.EnvTest})
 
 	do := func(path, auth string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)

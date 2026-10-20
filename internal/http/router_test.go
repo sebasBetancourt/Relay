@@ -12,7 +12,7 @@ import (
 
 func TestHealthz(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(log, nil, nil, apikey.EnvTest) // healthz no usa la DB ni el store
+	router := NewRouter(Deps{Log: log, Env: apikey.EnvTest}) // healthz no usa la DB ni el store
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()

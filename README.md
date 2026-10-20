@@ -68,3 +68,26 @@ How authentication works:
 - Revoked keys stop working immediately on the instance that revoked them, and within 30 seconds (cache TTL) on the others.
 
 Key format and secret scanning: [docs/secret-scanning.md](docs/secret-scanning.md).
+
+## Connect a Google account
+
+`GET /v1/connect/{provider}` starts the OAuth flow (authorization code + PKCE) for the calling tenant. Only `google` is enabled for now.
+
+```bash
+# Default: 302 to Google's consent screen (open the Location in a browser)
+curl -i -H "Authorization: Bearer $(cat acme.key)" localhost:8080/v1/connect/google
+
+# For backends: get the URL as JSON and hand it to your end user's browser
+curl -H "Authorization: Bearer $(cat acme.key)" -H "Accept: application/json" \
+  localhost:8080/v1/connect/google
+# {"authorization_url":"https://accounts.google.com/o/oauth2/auth?..."}
+```
+
+| Case | Status |
+| --- | --- |
+| Consent URL created | `302` (or `200` JSON with `Accept: application/json`) |
+| Missing or invalid API key | `401 {"error":"unauthorized"}` |
+| Unknown or not yet enabled provider | `400 {"error":"unsupported_provider"}` |
+| Database failure | `500 {"error":"internal error"}` |
+
+Relay stores a one-time `state` and the PKCE `code_verifier` in `oauth_states` for 10 minutes; only the `code_challenge` (SHA-256 of the verifier) travels in the URL. Scope is `calendar.readonly` with `access_type=offline` and `prompt=consent` so Google returns a refresh token. The callback (`/v1/oauth/google/callback`) is the next step.

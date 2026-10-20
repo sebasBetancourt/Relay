@@ -10,7 +10,19 @@ import (
 	"github.com/sebasBetancourt/relay/internal/apikey"
 )
 
-func NewRouter(log *slog.Logger, db *pgxpool.Pool, tenants TenantLookup, env apikey.Env) http.Handler {
+// Deps is everything the router needs, built once in main (no globals).
+// A struct instead of positional parameters keeps NewRouter stable as
+// features are added, and lets tests set only what they use.
+type Deps struct {
+	Log     *slog.Logger
+	DB      *pgxpool.Pool
+	Tenants TenantLookup
+	Env     apikey.Env
+	Connect Connector
+}
+
+func NewRouter(d Deps) http.Handler {
+	log, db := d.Log, d.DB
 	mux := http.NewServeMux()
 
 	// Public: probes from Docker/Kubernetes carry no API key.
@@ -36,7 +48,8 @@ func NewRouter(log *slog.Logger, db *pgxpool.Pool, tenants TenantLookup, env api
 	// not reveal which routes exist.
 	v1 := http.NewServeMux()
 	v1.HandleFunc("GET /v1/me", handleMe)
-	mux.Handle("/v1/", RequireAPIKey(log, tenants, env)(v1))
+	v1.HandleFunc("GET /v1/connect/{provider}", handleConnect(log, d.Connect))
+	mux.Handle("/v1/", RequireAPIKey(log, d.Tenants, d.Env)(v1))
 
 	// Outer runs first. RequestID must wrap Recover/Logger so they see the id in context.
 	return RequestID(Recover(log)(Logger(log)(mux)))

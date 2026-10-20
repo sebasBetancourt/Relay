@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"golang.org/x/oauth2"
+
 	"github.com/sebasBetancourt/relay/internal/config"
+	"github.com/sebasBetancourt/relay/internal/connect"
 	relayhttp "github.com/sebasBetancourt/relay/internal/http"
 	"github.com/sebasBetancourt/relay/internal/store"
 	"github.com/sebasBetancourt/relay/internal/vault"
@@ -34,7 +37,7 @@ func main() {
 		log.Error("vault init failed", "err", err)
 		os.Exit(1)
 	}
-	_ = vlt
+	_ = vlt // used by the OAuth callback (next step)
 
 	pool, err := store.NewPool(context.Background(), cfg.DatabaseURL)
 	if err != nil {
@@ -43,9 +46,21 @@ func main() {
 	}
 	defer pool.Close()
 
+	// Composition root: the only place that reads config and wires packages.
+	providers := map[connect.Provider]*oauth2.Config{
+		connect.ProviderGoogle: connect.GoogleConfig(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL),
+	}
+	deps := relayhttp.Deps{
+		Log:     log,
+		DB:      pool,
+		Tenants: store.NewTenants(pool),
+		Env:     cfg.Env,
+		Connect: connect.NewService(store.NewOAuthStates(pool), providers),
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           relayhttp.NewRouter(log, pool, store.NewTenants(pool), cfg.Env),
+		Handler:           relayhttp.NewRouter(deps),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,

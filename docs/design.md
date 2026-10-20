@@ -78,6 +78,8 @@ sequenceDiagram
 
 #### A. Connect account
 
+> Status: steps 1–2 are implemented for Google (`internal/connect`, `GET /v1/connect/{provider}`). Steps 3–5 (callback, token exchange, encrypted storage via `internal/vault`) are next.
+
 1. Client calls `GET /v1/connect/{provider}` with its API key.
 
    At this point **no OAuth tokens exist yet**. The API only generates three random values:
