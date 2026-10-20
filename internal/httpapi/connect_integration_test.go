@@ -14,9 +14,9 @@ import (
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
-// TestConnectGoogleWithRealDB runs router → middleware.RequireAPIKey → oauth.Service
+// TestConnectWithRealDB runs router → middleware.RequireAPIKey → oauth.Service
 // → store → Postgres and checks the state in the Location is really stored.
-func TestConnectGoogleWithRealDB(t *testing.T) {
+func TestConnectWithRealDB(t *testing.T) {
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
 		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
@@ -44,6 +44,8 @@ func TestConnectGoogleWithRealDB(t *testing.T) {
 		States: store.NewOAuthStates(pool),
 		Providers: map[oauth.Provider]oauth.ProviderSpec{
 			oauth.ProviderGoogle: oauth.GoogleSpec("client-123", "secret-xyz", "http://localhost:8080/v1/oauth/google/callback"),
+			oauth.ProviderMicrosoft: oauth.MicrosoftSpec("ms-client", "ms-secret",
+				"http://localhost:8080/v1/oauth/microsoft/callback", "common", oauth.MicrosoftGraphURL),
 		},
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
@@ -56,29 +58,33 @@ func TestConnectGoogleWithRealDB(t *testing.T) {
 		Callback: svc,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/connect/google", nil)
-	req.Header.Set("Authorization", "Bearer "+key.Plaintext)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	for _, provider := range []string{"google", "microsoft"} {
+		t.Run(provider, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v1/connect/"+provider, nil)
+			req.Header.Set("Authorization", "Bearer "+key.Plaintext)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302 (body %q)", rec.Code, rec.Body.String())
-	}
-	loc, err := url.Parse(rec.Header().Get("Location"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := loc.Query().Get("state")
+			if rec.Code != http.StatusFound {
+				t.Fatalf("status = %d, want 302 (body %q)", rec.Code, rec.Body.String())
+			}
+			loc, err := url.Parse(rec.Header().Get("Location"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := loc.Query().Get("state")
 
-	var tenantID, provider string
-	err = pool.QueryRow(ctx,
-		"SELECT tenant_id::text, provider::text FROM oauth_states WHERE state = $1 AND expires_at > now() AND used_at IS NULL",
-		state,
-	).Scan(&tenantID, &provider)
-	if err != nil {
-		t.Fatalf("state from Location not found as a live row: %v", err)
-	}
-	if tenantID != tenant.ID || provider != "google" {
-		t.Fatalf("row = %s/%s, want %s/google", tenantID, provider, tenant.ID)
+			var tenantID, gotProvider string
+			err = pool.QueryRow(ctx,
+				"SELECT tenant_id::text, provider::text FROM oauth_states WHERE state = $1 AND expires_at > now() AND used_at IS NULL",
+				state,
+			).Scan(&tenantID, &gotProvider)
+			if err != nil {
+				t.Fatalf("state from Location not found as a live row: %v", err)
+			}
+			if tenantID != tenant.ID || gotProvider != provider {
+				t.Fatalf("row = %s/%s, want %s/%s", tenantID, gotProvider, tenant.ID, provider)
+			}
+		})
 	}
 }

@@ -50,12 +50,16 @@ func main() {
 	apiHTTP := &http.Client{Timeout: 10 * time.Second}
 
 	// Only configured providers are wired; the others answer 400
-	// unsupported_provider. Microsoft is wired with GET /v1/connect/microsoft.
+	// unsupported_provider.
 	providers := map[oauth.Provider]oauth.ProviderSpec{}
 	sources := map[oauth.Provider]calendar.Source{}
 	if g := cfg.Google; g != nil {
 		providers[oauth.ProviderGoogle] = oauth.GoogleSpec(g.ClientID, g.ClientSecret, g.RedirectURL)
 		sources[oauth.ProviderGoogle] = calendar.NewGoogleSource(apiHTTP)
+	}
+	if m := cfg.Microsoft; m != nil {
+		providers[oauth.ProviderMicrosoft] = oauth.MicrosoftSpec(m.ClientID, m.ClientSecret, m.RedirectURL, m.Tenant, oauth.MicrosoftGraphURL)
+		// The Graph calendar source lands with Microsoft events.
 	}
 
 	oauthStates := store.NewOAuthStates(pool)

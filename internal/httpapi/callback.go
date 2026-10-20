@@ -78,7 +78,7 @@ func mapCallbackError(err error) (status int, code string) {
 		return http.StatusBadRequest, "exchange_failed"
 	case errors.Is(err, oauth.ErrInsufficientScope):
 		return http.StatusBadRequest, "insufficient_scope"
-	case errors.Is(err, oauth.ErrInvalidIDToken):
+	case errors.Is(err, oauth.ErrInvalidIDToken), errors.Is(err, oauth.ErrIdentityLookup):
 		return http.StatusBadGateway, "provider_error"
 	case errors.Is(err, oauth.ErrProviderUnavailable):
 		return http.StatusBadGateway, "provider_unavailable"

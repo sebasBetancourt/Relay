@@ -196,3 +196,50 @@ func TestConnectRejectsPost(t *testing.T) {
 		t.Fatalf("status = %d, want 405", rec.Code)
 	}
 }
+
+func TestConnectMicrosoftRedirects(t *testing.T) {
+	key := apikey.Generate(apikey.EnvTest)
+	tenant := store.Tenant{ID: "tenant-ms", Name: "Contoso", KeyPrefix: key.KeyPrefix}
+	states := &fakeStates{}
+	svc := oauth.NewService(oauth.Deps{
+		States: states,
+		Providers: map[oauth.Provider]oauth.ProviderSpec{
+			oauth.ProviderMicrosoft: oauth.MicrosoftSpec("ms-client", "ms-secret",
+				"http://localhost:8080/v1/oauth/microsoft/callback", "common", oauth.MicrosoftGraphURL),
+		},
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+	})
+	router := NewRouter(Deps{
+		Log:     discardLogger(),
+		Tenants: &fakeLookup{tenants: map[string]store.Tenant{key.Hash: tenant}},
+		Env:     apikey.EnvTest,
+		Connect: svc,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/connect/microsoft", nil)
+	req.Header.Set("Authorization", "Bearer "+key.Plaintext)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 (body %q)", rec.Code, rec.Body.String())
+	}
+	if len(states.saved) != 1 || states.saved[0].Provider != "microsoft" || states.saved[0].TenantID != tenant.ID {
+		t.Fatalf("saved = %+v", states.saved)
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc.Host != "login.microsoftonline.com" || loc.Path != "/common/oauth2/v2.0/authorize" {
+		t.Fatalf("Location = %s", loc)
+	}
+	sum := sha256.Sum256([]byte(states.saved[0].CodeVerifier))
+	if loc.Query().Get("state") != states.saved[0].State ||
+		loc.Query().Get("code_challenge") != base64.RawURLEncoding.EncodeToString(sum[:]) {
+		t.Fatal("Location must carry the saved state and its PKCE challenge")
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("missing Cache-Control: no-store")
+	}
+}

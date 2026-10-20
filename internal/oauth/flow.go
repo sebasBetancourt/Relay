@@ -129,11 +129,10 @@ func (s *Service) Start(ctx context.Context, tenantID string, provider Provider)
 		return "", fmt.Errorf("start connect: %w", err)
 	}
 
-	return spec.OAuth.AuthCodeURL(state,
-		oauth2.AccessTypeOffline,
-		oauth2.ApprovalForce,
-		oauth2.S256ChallengeOption(verifier),
-	), nil
+	// Provider options first, then PKCE: S256 is added last so no provider
+	// spec can override the challenge.
+	opts := append(append([]oauth2.AuthCodeOption{}, spec.AuthOptions...), oauth2.S256ChallengeOption(verifier))
+	return spec.OAuth.AuthCodeURL(state, opts...), nil
 }
 
 // Finish completes the callback (design.md A.3–5): consume state, exchange
@@ -164,14 +163,15 @@ func (s *Service) Finish(ctx context.Context, provider Provider, state, code, pr
 	}
 
 	granted := grantedScopes(tok)
-	if !scopeGranted(granted, spec.RequiredScope) {
+	if !spec.scopeGranted(granted) {
 		return Result{}, ErrInsufficientScope
 	}
 
-	sub, err := spec.Identify(tok, spec.OAuth.ClientID)
+	ident, err := spec.Identify(ctx, s.http, tok, spec.OAuth.ClientID)
 	if err != nil {
 		return Result{}, err
 	}
+	sub := ident.AccountID
 
 	accessEnc, accessNonce, err := s.vault.Encrypt(
 		[]byte(tok.AccessToken),
@@ -235,15 +235,6 @@ func grantedScopes(tok *oauth2.Token) []string {
 		}
 	}
 	return out
-}
-
-func scopeGranted(granted []string, required string) bool {
-	for _, s := range granted {
-		if s == required {
-			return true
-		}
-	}
-	return false
 }
 
 func newState() (string, error) {

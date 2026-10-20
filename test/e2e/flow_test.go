@@ -82,8 +82,9 @@ func newFlow(t *testing.T) *flow {
 		OAuth: &oauth2.Config{
 			ClientID: "flow-client", ClientSecret: "flow-secret", RedirectURL: redirect,
 			Endpoint: oauth2.Endpoint{AuthURL: g.AuthURL(), TokenURL: g.TokenURL()},
-			Scopes:   []string{oauth.GoogleOpenID, oauth.GoogleCalendarReadonly},
+			Scopes:   base.OAuth.Scopes,
 		},
+		AuthOptions:   base.AuthOptions,
 		RequiredScope: base.RequiredScope,
 		Identify:      base.Identify,
 	}

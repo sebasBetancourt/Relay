@@ -1,10 +1,12 @@
 package oauth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -27,13 +29,46 @@ const GoogleCalendarReadonly = "https://www.googleapis.com/auth/calendar.readonl
 // `sub`, the permanent Google account id used as provider_account_id.
 const GoogleOpenID = "openid"
 
-// ProviderSpec is everything Service needs for one OAuth provider. Adding
-// Microsoft later means another map entry, not a rewrite of Finish.
+// GoogleEmail adds the account's email (and email_verified) to the id_token.
+const GoogleEmail = "email"
+
+// Identity is who the connected provider account is.
+type Identity struct {
+	// AccountID is the provider's permanent id (Google `sub`, Microsoft
+	// Graph `id`), stored as provider_account_id and bound into the AAD.
+	AccountID string
+	// Email is informational and may change or be empty; never use it as a key.
+	Email string
+}
+
+// ProviderSpec is everything Service needs for one OAuth provider. Start,
+// Finish and refresh never branch on the provider: adding one means a new
+// spec, not a rewrite of the flow.
 type ProviderSpec struct {
-	OAuth         *oauth2.Config
+	OAuth *oauth2.Config
+	// AuthOptions are provider-specific consent URL parameters
+	// (state and PKCE are always added by Start).
+	AuthOptions []oauth2.AuthCodeOption
+	// RequiredScope must be granted, or Finish returns ErrInsufficientScope.
 	RequiredScope string
-	// Identify returns provider_account_id from the token response.
-	Identify func(tok *oauth2.Token, clientID string) (string, error)
+	// HasScope reports whether RequiredScope is among the granted scopes.
+	// Nil means an exact match.
+	HasScope func(granted []string) bool
+	// Identify returns who the account is, using the token response and, if
+	// needed, an API call with the injected HTTP client.
+	Identify func(ctx context.Context, c *http.Client, tok *oauth2.Token, clientID string) (Identity, error)
+}
+
+func (p ProviderSpec) scopeGranted(granted []string) bool {
+	if p.HasScope != nil {
+		return p.HasScope(granted)
+	}
+	for _, s := range granted {
+		if s == p.RequiredScope {
+			return true
+		}
+	}
+	return false
 }
 
 // GoogleConfig builds the OAuth client for Google. It uses
@@ -45,14 +80,18 @@ func GoogleConfig(clientID, clientSecret, redirectURL string) *oauth2.Config {
 		ClientSecret: clientSecret,
 		RedirectURL:  redirectURL,
 		Endpoint:     endpoints.Google,
-		Scopes:       []string{GoogleOpenID, GoogleCalendarReadonly},
+		Scopes:       []string{GoogleOpenID, GoogleEmail, GoogleCalendarReadonly},
 	}
 }
 
 // GoogleSpec wraps GoogleConfig with identify + required calendar scope.
 func GoogleSpec(clientID, clientSecret, redirectURL string) ProviderSpec {
 	return ProviderSpec{
-		OAuth:         GoogleConfig(clientID, clientSecret, redirectURL),
+		OAuth: GoogleConfig(clientID, clientSecret, redirectURL),
+		AuthOptions: []oauth2.AuthCodeOption{
+			oauth2.AccessTypeOffline, // access_type=offline → Google returns a refresh_token
+			oauth2.ApprovalForce,     // prompt=consent → refresh_token even on reconnect
+		},
 		RequiredScope: GoogleCalendarReadonly,
 		Identify:      googleIdentify,
 	}
@@ -64,33 +103,40 @@ func GoogleSpec(clientID, clientSecret, redirectURL string) ProviderSpec {
 // that when the id_token is obtained directly from the token endpoint over
 // TLS (as oauth2.Exchange does). If the id_token ever arrived via the
 // browser, JWKS verification would be required.
-func googleIdentify(tok *oauth2.Token, clientID string) (string, error) {
+//
+// The email is kept only when Google marks it verified.
+func googleIdentify(_ context.Context, _ *http.Client, tok *oauth2.Token, clientID string) (Identity, error) {
 	raw, _ := tok.Extra("id_token").(string)
 	if raw == "" {
-		return "", fmt.Errorf("%w: missing id_token", ErrInvalidIDToken)
+		return Identity{}, fmt.Errorf("%w: missing id_token", ErrInvalidIDToken)
 	}
 	claims, err := decodeJWTPayload(raw)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidIDToken, err)
+		return Identity{}, fmt.Errorf("%w: %v", ErrInvalidIDToken, err)
 	}
 
 	iss, _ := claims["iss"].(string)
 	if iss != "https://accounts.google.com" && iss != "accounts.google.com" {
-		return "", fmt.Errorf("%w: bad iss", ErrInvalidIDToken)
+		return Identity{}, fmt.Errorf("%w: bad iss", ErrInvalidIDToken)
 	}
 	aud, ok := claimAudience(claims["aud"])
 	if !ok || aud != clientID {
-		return "", fmt.Errorf("%w: bad aud", ErrInvalidIDToken)
+		return Identity{}, fmt.Errorf("%w: bad aud", ErrInvalidIDToken)
 	}
 	exp, ok := claimUnix(claims["exp"])
 	if !ok || !time.Now().Before(time.Unix(exp, 0)) {
-		return "", fmt.Errorf("%w: expired", ErrInvalidIDToken)
+		return Identity{}, fmt.Errorf("%w: expired", ErrInvalidIDToken)
 	}
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
-		return "", fmt.Errorf("%w: empty sub", ErrInvalidIDToken)
+		return Identity{}, fmt.Errorf("%w: empty sub", ErrInvalidIDToken)
 	}
-	return sub, nil
+
+	id := Identity{AccountID: sub}
+	if verified, _ := claims["email_verified"].(bool); verified {
+		id.Email, _ = claims["email"].(string)
+	}
+	return id, nil
 }
 
 func decodeJWTPayload(jwt string) (map[string]any, error) {
