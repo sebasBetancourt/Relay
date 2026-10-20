@@ -9,15 +9,17 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/sebasBetancourt/relay/internal/store"
-	"github.com/sebasBetancourt/relay/internal/vault"
 )
 
 // StateTTL is how long a user has to finish the consent screen.
@@ -46,41 +48,53 @@ type StateStore interface {
 	Consume(ctx context.Context, state, provider string) (store.ConsumedState, error)
 }
 
-// AccountStore persists an encrypted provider connection.
+// AccountStore persists encrypted provider connections and token updates.
 type AccountStore interface {
 	SaveConnection(ctx context.Context, c store.Connection) (accountID string, err error)
+	AccountForTenant(ctx context.Context, accountID, tenantID string) (store.StoredAccount, error)
+	UpdateTokens(ctx context.Context, accountID string, u store.TokenUpdate) error
+	MarkRevoked(ctx context.Context, accountID string) error
 }
 
-// Encrypter is the vault surface Finish needs (*vault.Vault implements it).
-type Encrypter interface {
+// Cipher is the vault surface (*vault.Vault implements it).
+type Cipher interface {
 	Encrypt(plaintext, aad []byte) (ciphertext, nonce []byte, err error)
+	Decrypt(ciphertext, nonce, aad []byte) ([]byte, error)
 }
 
 // Deps is everything Service needs, built once in main.
 type Deps struct {
 	States     StateStore
 	Accounts   AccountStore
-	Vault      Encrypter
+	Vault      Cipher
 	Providers  map[Provider]ProviderSpec
 	HTTPClient *http.Client // timeout required; oauth2 defaults to http.DefaultClient (no timeout)
+	Log        *slog.Logger
 }
 
 type Service struct {
 	states    StateStore
 	accounts  AccountStore
-	vault     Encrypter
+	vault     Cipher
 	providers map[Provider]ProviderSpec
 	http      *http.Client
+	log       *slog.Logger
+	flight    singleflight.Group
 }
 
 // NewService wires the connect service. HTTPClient must have a Timeout.
 func NewService(d Deps) *Service {
+	log := d.Log
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &Service{
 		states:    d.States,
 		accounts:  d.Accounts,
 		vault:     d.Vault,
 		providers: maps.Clone(d.Providers),
 		http:      d.HTTPClient,
+		log:       log,
 	}
 }
 
@@ -161,7 +175,7 @@ func (s *Service) Finish(ctx context.Context, provider Provider, state, code, pr
 
 	accessEnc, accessNonce, err := s.vault.Encrypt(
 		[]byte(tok.AccessToken),
-		vault.AAD("oauth_tokens", consumed.TenantID, string(provider), sub, "access_token"),
+		tokenAAD(consumed.TenantID, string(provider), sub, "access_token"),
 	)
 	if err != nil {
 		return Result{}, fmt.Errorf("finish connect: encrypt access: %w", err)
@@ -171,7 +185,7 @@ func (s *Service) Finish(ctx context.Context, provider Provider, state, code, pr
 	if tok.RefreshToken != "" {
 		refreshEnc, refreshNonce, err = s.vault.Encrypt(
 			[]byte(tok.RefreshToken),
-			vault.AAD("oauth_tokens", consumed.TenantID, string(provider), sub, "refresh_token"),
+			tokenAAD(consumed.TenantID, string(provider), sub, "refresh_token"),
 		)
 		if err != nil {
 			return Result{}, fmt.Errorf("finish connect: encrypt refresh: %w", err)

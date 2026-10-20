@@ -36,6 +36,16 @@ func (f *fakeAccounts) SaveConnection(_ context.Context, c store.Connection) (st
 	return f.id, nil
 }
 
+func (f *fakeAccounts) AccountForTenant(context.Context, string, string) (store.StoredAccount, error) {
+	return store.StoredAccount{}, store.ErrNotFound
+}
+
+func (f *fakeAccounts) UpdateTokens(context.Context, string, store.TokenUpdate) error {
+	return nil
+}
+
+func (f *fakeAccounts) MarkRevoked(context.Context, string) error { return nil }
+
 func makeIDToken(t *testing.T, aud, iss, sub string, exp time.Time) string {
 	t.Helper()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))

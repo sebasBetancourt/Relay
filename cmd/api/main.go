@@ -12,6 +12,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/sebasBetancourt/relay/internal/calendar"
 	"github.com/sebasBetancourt/relay/internal/config"
 	"github.com/sebasBetancourt/relay/internal/connect"
 	relayhttp "github.com/sebasBetancourt/relay/internal/http"
@@ -42,7 +43,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	oauthHTTP := &http.Client{Timeout: 10 * time.Second}
+	apiHTTP := &http.Client{Timeout: 10 * time.Second}
 	connectSvc := connect.NewService(connect.Deps{
 		States:   store.NewOAuthStates(pool),
 		Accounts: store.NewAccounts(pool),
@@ -50,7 +51,11 @@ func main() {
 		Providers: map[connect.Provider]connect.ProviderSpec{
 			connect.ProviderGoogle: connect.GoogleSpec(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL),
 		},
-		HTTPClient: oauthHTTP,
+		HTTPClient: apiHTTP,
+		Log:        log,
+	})
+	calendarSvc := calendar.NewService(connectSvc, map[connect.Provider]calendar.Source{
+		connect.ProviderGoogle: calendar.NewGoogleSource(apiHTTP),
 	})
 
 	deps := relayhttp.Deps{
@@ -60,6 +65,7 @@ func main() {
 		Env:      cfg.Env,
 		Connect:  connectSvc,
 		Callback: connectSvc,
+		Calendar: calendarSvc,
 	}
 
 	srv := &http.Server{

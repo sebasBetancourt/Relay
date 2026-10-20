@@ -137,6 +137,8 @@ sequenceDiagram
 
 #### B. Read events
 
+**Implemented:** `GET /v1/calendars/{id}/events` (steps 6–9). `{id}` is `connected_accounts.id` (the `account_id` from the callback); events come from that account’s **primary** calendar. Default window: `now` → `now+30d`. Refresh uses a **60s skew** and **singleflight per account** so concurrent requests share one token refresh. AAD for decrypt matches connect: `("oauth_tokens", tenantID, provider, providerAccountID, column)`.
+
 6. Client calls `GET /v1/calendars/{id}/events`.
 
    Tenant comes from the API key in `Authorization`. With that tenant, check that calendar/account `{id}` belongs to it.
@@ -147,12 +149,12 @@ sequenceDiagram
 
    | Case | Behavior |
    | --- | --- |
-   | `access_token` expired | Refresh silently with the provider. Save new tokens (Microsoft rotates refresh every time). Continue the request — **do not** send the user through connect again. |
+   | `access_token` expired (or within 60s of expiry) | Refresh silently with the provider. Save new tokens (Microsoft rotates refresh every time). Continue the request — **do not** send the user through connect again. |
    | Refresh fails (`invalid_grant` / revoked) | Mark account as `revoked`, delete tokens, return **409** Conflict with a clear body (e.g. `account_revoked`) so the client reconnects. Do **not** use 401 here — that means bad API key. The account **can** be reconnected. |
 
 8. API asks the provider for events.
 
-   Call the provider with `Authorization: Bearer <access_token>`.
+   Call the provider with `Authorization: Bearer <access_token>`. On **401**, force one refresh and retry once.
 
 9. API normalizes and returns them.
 
@@ -161,13 +163,13 @@ sequenceDiagram
    | Field | Notes |
    | --- | --- |
    | `id` | Provider event id |
-   | `title` | Summary / subject |
-   | `start` | Start datetime |
-   | `end` | End datetime |
-   | `timezone` | IANA tz when timed |
+   | `title` | Summary / subject (empty string if missing — never invented) |
+   | `start` | RFC3339 with offset when timed; `YYYY-MM-DD` when `all_day` |
+   | `end` | Same formats; exclusive for all-day (Google/Outlook) |
+   | `timezone` | IANA tz when timed (event tz, else calendar tz) |
    | `all_day` | Boolean |
    | `location` | Optional |
-   | `organizer` | Optional (email / name) |
+   | `organizer` | Optional object `{"email","name"}` |
    | `provider` | `google` or `microsoft` |
 
 ### Data model

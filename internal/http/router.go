@@ -20,6 +20,7 @@ type Deps struct {
 	Env      apikey.Env
 	Connect  Connector
 	Callback Callbacker
+	Calendar CalendarReader
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -54,6 +55,7 @@ func NewRouter(d Deps) http.Handler {
 	v1 := http.NewServeMux()
 	v1.HandleFunc("GET /v1/me", handleMe)
 	v1.HandleFunc("GET /v1/connect/{provider}", handleConnect(log, d.Connect))
+	v1.HandleFunc("GET /v1/calendars/{id}/events", handleListEvents(log, d.Calendar))
 	mux.Handle("/v1/", RequireAPIKey(log, d.Tenants, d.Env)(v1))
 
 	// Outer runs first. RequestID must wrap Recover/Logger so they see the id in context.

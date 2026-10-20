@@ -83,6 +83,98 @@ func TestAccountsSaveConnection(t *testing.T) {
 	}
 }
 
+func TestAccountForTenantAndTokensLifecycle(t *testing.T) {
+	tenants := newTestTenants(t)
+	accounts := NewAccounts(tenants.db)
+	ctx := context.Background()
+	tenant := createTenant(t, tenants, "Lookup", apikey.Generate(apikey.EnvTest))
+	other := createTenant(t, tenants, "OtherLookup", apikey.Generate(apikey.EnvTest))
+
+	conn := Connection{
+		TenantID:          tenant.ID,
+		Provider:          "google",
+		ProviderAccountID: "sub-lookup-1",
+		AccessEnc:         []byte("access-enc"),
+		AccessNonce:       []byte("access-n"),
+		RefreshEnc:        []byte("refresh-enc"),
+		RefreshNonce:      []byte("refresh-n"),
+		ExpiresAt:         time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond),
+		Scopes:            []string{"openid"},
+	}
+	id, err := accounts.SaveConnection(ctx, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := accounts.AccountForTenant(ctx, id, tenant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "active" || !got.HasTokens || !bytes.Equal(got.AccessEnc, conn.AccessEnc) {
+		t.Fatalf("got %+v", got)
+	}
+
+	_, err = accounts.AccountForTenant(ctx, id, other.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other tenant: %v", err)
+	}
+	_, err = accounts.AccountForTenant(ctx, "not-a-uuid", tenant.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("bad uuid: %v", err)
+	}
+
+	newExp := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Microsecond)
+	err = accounts.UpdateTokens(ctx, id, TokenUpdate{
+		AccessEnc:   []byte("access-enc-2"),
+		AccessNonce: []byte("access-n-2"),
+		ExpiresAt:   newExp,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = accounts.AccountForTenant(ctx, id, tenant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.AccessEnc, []byte("access-enc-2")) {
+		t.Fatal("access not updated")
+	}
+	if !bytes.Equal(got.RefreshEnc, []byte("refresh-enc")) || !bytes.Equal(got.RefreshNonce, []byte("refresh-n")) {
+		t.Fatal("refresh must be preserved when omitted")
+	}
+	if !got.ExpiresAt.Equal(newExp) {
+		t.Fatalf("expires_at = %v want %v", got.ExpiresAt, newExp)
+	}
+
+	if err := accounts.MarkRevoked(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	got, err = accounts.AccountForTenant(ctx, id, tenant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "revoked" || got.HasTokens {
+		t.Fatalf("after revoke: %+v", got)
+	}
+
+	// Reconnect reactivates.
+	conn.AccessEnc = []byte("access-enc-3")
+	conn.AccessNonce = []byte("access-n-3")
+	conn.RefreshEnc = []byte("refresh-enc-3")
+	conn.RefreshNonce = []byte("refresh-n-3")
+	id2, err := accounts.SaveConnection(ctx, conn)
+	if err != nil || id2 != id {
+		t.Fatalf("reconnect id=%s err=%v", id2, err)
+	}
+	got, err = accounts.AccountForTenant(ctx, id, tenant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "active" || !got.HasTokens {
+		t.Fatalf("reactivated: %+v", got)
+	}
+}
+
 func TestAccountsPreserveRefreshWhenMissing(t *testing.T) {
 	tenants := newTestTenants(t)
 	accounts := NewAccounts(tenants.db)

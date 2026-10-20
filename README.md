@@ -115,3 +115,54 @@ Tokens are encrypted (AES-256-GCM) and never returned in the body. Reloading the
 | Google down / timeout | `502` | `provider_unavailable` |
 | Account owned by another tenant | `409` | `account_already_connected` |
 | DB / vault failure | `500` | `internal error` |
+
+## Read events
+
+`GET /v1/calendars/{id}/events` lists events from the connected account’s **primary** calendar. `{id}` is the `account_id` returned by the OAuth callback (`connected_accounts.id`). Requires an API key.
+
+```bash
+# account_id from the callback JSON, or: SELECT id FROM connected_accounts;
+curl -s -H "Authorization: Bearer $(cat demo.key)" \
+  "localhost:8080/v1/calendars/<account_id>/events?max_results=5" | jq
+```
+
+| Query | Default | Notes |
+| --- | --- | --- |
+| `time_min` | now (RFC3339) | |
+| `time_max` | `time_min + 30d` | Must be after `time_min`; max range 366 days |
+| `max_results` | 50 | 1–250 |
+| `page_token` | — | Opaque; pass through from a previous response |
+
+Example response:
+
+```json
+{
+  "events": [
+    {
+      "id": "…",
+      "title": "Standup",
+      "start": "2026-10-20T09:00:00-05:00",
+      "end": "2026-10-20T09:30:00-05:00",
+      "timezone": "America/Bogota",
+      "all_day": false,
+      "location": "Zoom",
+      "organizer": {"email": "a@ex.com", "name": "Ada"},
+      "provider": "google"
+    }
+  ],
+  "next_page_token": "…"
+}
+```
+
+Expired access tokens are refreshed silently (60s skew, singleflight per account). If Google rejects the refresh, the account is marked `revoked` and the client gets **409** (reconnect via `/v1/connect/google`).
+
+| Case | Status | `error` |
+| --- | --- | --- |
+| OK | 200 | — |
+| Invalid query | 400 | `invalid_query` |
+| Missing / wrong-tenant account | 404 | `not_found` |
+| Account revoked / refresh invalid | 409 | `account_revoked` |
+| Google rate limit | 429 | `provider_rate_limited` (+ `Retry-After`) |
+| Google down / timeout | 502 | `provider_unavailable` |
+| Unexpected provider response | 502 | `provider_error` |
+| DB / decrypt failure | 500 | `internal error` |
