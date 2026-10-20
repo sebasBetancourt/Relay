@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,5 +242,24 @@ func TestConnectMicrosoftRedirects(t *testing.T) {
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("missing Cache-Control: no-store")
+	}
+}
+
+// A human copies authorization_url from the raw body into a browser:
+// "&" must stay literal, not \u0026 (regression: AADSTS900144 "missing scope").
+func TestConnectJSONKeepsAmpersandsLiteral(t *testing.T) {
+	f := newConnectFixture(t, nil)
+
+	rec := f.get("/v1/connect/google", "Bearer "+f.key.Plaintext, "application/json")
+
+	raw := rec.Body.String()
+	if strings.Contains(raw, `\u0026`) {
+		t.Fatalf("body escapes & as \\u0026: %s", raw)
+	}
+	if !strings.Contains(raw, "&code_challenge=") || !strings.Contains(raw, "&scope=") {
+		t.Fatalf("body must carry literal & separators: %s", raw)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
 	}
 }

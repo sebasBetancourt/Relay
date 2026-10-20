@@ -95,6 +95,7 @@ func bearerToken(header string) (string, bool) {
 // error responses, so a 401 from the middleware looks like any other error.
 func writeError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(struct {
 		Error string `json:"error"`

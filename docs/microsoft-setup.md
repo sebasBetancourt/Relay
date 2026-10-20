@@ -12,6 +12,7 @@ Microsoft is optional: Relay starts with Google only, Microsoft only, or both. C
 2. Name: `relay-dev`.
 3. **Supported account types:** *Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant) and personal Microsoft accounts (e.g. Skype, Xbox)*.
    This covers both Microsoft 365 work/school mailboxes and personal Outlook.com accounts, and matches `MICROSOFT_TENANT_ID=common`.
+   If the app already exists with another account type, change it in **Manifest**: first `api.requestedAccessTokenVersion: 2`, then `signInAudience: "AzureADandPersonalMicrosoftAccount"` (the portal rejects the second change without the first).
 4. **Redirect URI:** platform **Web**, value `http://localhost:8080/v1/oauth/microsoft/callback`.
 5. **Register.**
 
@@ -85,6 +86,7 @@ MICROSOFT_EXPIRATION_DATE=<YYYY-MM-DD>
 | `AADSTS7000222` expired client secret | The secret passed its expiry date | Rotate it (section 3) |
 | `AADSTS700016` application not found in the directory | Tenant mismatch, e.g. a single-tenant app used with `common` | Fix the account type or `MICROSOFT_TENANT_ID` |
 | `AADSTS50020` user account does not exist in tenant | Personal account signing in to an app that does not allow personal accounts | Use the multitenant + personal account type |
+| `unauthorized_client: The client does not exist or is not enabled for consumers` | The app does not accept personal accounts, but someone signed in with Outlook.com/Hotmail through `common` | In **Manifest**, set `api.requestedAccessTokenVersion` to `2` first, then `signInAudience` to `AzureADandPersonalMicrosoftAccount`, and save. Or use `MICROSOFT_TENANT_ID=organizations` with a work/school account |
 | `AADSTS65001` consent not granted | The organization requires admin consent | An admin grants consent in **API permissions** |
 
 ## Production
