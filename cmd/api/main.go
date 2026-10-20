@@ -15,9 +15,9 @@ import (
 
 	"github.com/sebasBetancourt/relay/internal/calendar"
 	"github.com/sebasBetancourt/relay/internal/config"
-	"github.com/sebasBetancourt/relay/internal/connect"
-	relayhttp "github.com/sebasBetancourt/relay/internal/http"
+	"github.com/sebasBetancourt/relay/internal/httpapi"
 	"github.com/sebasBetancourt/relay/internal/janitor"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/store"
 	"github.com/sebasBetancourt/relay/internal/vault"
 )
@@ -46,33 +46,33 @@ func main() {
 
 	apiHTTP := &http.Client{Timeout: 10 * time.Second}
 	oauthStates := store.NewOAuthStates(pool)
-	connectSvc := connect.NewService(connect.Deps{
+	oauthSvc := oauth.NewService(oauth.Deps{
 		States:   oauthStates,
 		Accounts: store.NewAccounts(pool),
 		Vault:    vlt,
-		Providers: map[connect.Provider]connect.ProviderSpec{
-			connect.ProviderGoogle: connect.GoogleSpec(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL),
+		Providers: map[oauth.Provider]oauth.ProviderSpec{
+			oauth.ProviderGoogle: oauth.GoogleSpec(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL),
 		},
 		HTTPClient: apiHTTP,
 		Log:        log,
 	})
-	calendarSvc := calendar.NewService(connectSvc, map[connect.Provider]calendar.Source{
-		connect.ProviderGoogle: calendar.NewGoogleSource(apiHTTP),
+	calendarSvc := calendar.NewService(oauthSvc, map[oauth.Provider]calendar.Source{
+		oauth.ProviderGoogle: calendar.NewGoogleSource(apiHTTP),
 	})
 
-	deps := relayhttp.Deps{
+	deps := httpapi.Deps{
 		Log:      log,
 		DB:       pool,
 		Tenants:  store.NewTenants(pool),
 		Env:      cfg.Env,
-		Connect:  connectSvc,
-		Callback: connectSvc,
+		Connect:  oauthSvc,
+		Callback: oauthSvc,
 		Calendar: calendarSvc,
 	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           relayhttp.NewRouter(deps),
+		Handler:           httpapi.NewRouter(deps),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,

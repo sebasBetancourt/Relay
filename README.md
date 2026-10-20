@@ -47,7 +47,7 @@ TEST_DATABASE_URL='postgres://relay:relay@localhost:5435/relay?sslmode=disable' 
   go test -race -count=1 ./...
 ```
 
-Integration tests use a **stateful fake Google** (`internal/testutil/fakegoogle`): it checks PKCE, one-time codes, refresh/access validity and calendar Bearer tokens. The end-to-end flow suite is `go test -run Flow ./internal/http`.
+Integration tests use a **stateful fake Google** (`internal/testutil/fakegoogle`): it checks PKCE, one-time codes, refresh/access validity and calendar Bearer tokens. The end-to-end flow suite is `go test -run Flow ./test/e2e` (black-box: real router, services and Postgres, fake Google).
 
 ## Create a tenant and test your API key
 

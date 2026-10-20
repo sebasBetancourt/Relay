@@ -1,4 +1,4 @@
-package http
+package httpapi
 
 import (
 	"context"
@@ -6,13 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/httpapi/middleware"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
 // Callbacker is what the OAuth callback handler needs from connect.
 type Callbacker interface {
-	Finish(ctx context.Context, provider connect.Provider, state, code, providerErr string) (connect.Result, error)
+	Finish(ctx context.Context, provider oauth.Provider, state, code, providerErr string) (oauth.Result, error)
 }
 
 // handleCallback completes Google/Microsoft OAuth (design.md A.3–5).
@@ -20,7 +21,7 @@ type Callbacker interface {
 // Security is the one-time state (random, 10 min TTL, tenant-bound).
 func handleCallback(log *slog.Logger, c Callbacker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		provider := connect.Provider(r.PathValue("provider"))
+		provider := oauth.Provider(r.PathValue("provider"))
 		q := r.URL.Query()
 		state := q.Get("state")
 		code := q.Get("code")
@@ -38,13 +39,13 @@ func handleCallback(log *slog.Logger, c Callbacker) http.HandlerFunc {
 				log.Error("oauth callback failed",
 					"err", err,
 					"provider", provider,
-					"request_id", RequestIDFromContext(r.Context()),
+					"request_id", middleware.RequestIDFromContext(r.Context()),
 				)
 			} else {
 				log.Info("oauth callback rejected",
 					"reason", code,
 					"provider", provider,
-					"request_id", RequestIDFromContext(r.Context()),
+					"request_id", middleware.RequestIDFromContext(r.Context()),
 				)
 			}
 			writeJSON(w, status, errorBody{Error: code})
@@ -54,7 +55,7 @@ func handleCallback(log *slog.Logger, c Callbacker) http.HandlerFunc {
 		log.Info("oauth connected",
 			"provider", res.Provider,
 			"account_id", res.AccountID,
-			"request_id", RequestIDFromContext(r.Context()),
+			"request_id", middleware.RequestIDFromContext(r.Context()),
 		)
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusOK, struct {
@@ -67,19 +68,19 @@ func handleCallback(log *slog.Logger, c Callbacker) http.HandlerFunc {
 
 func mapCallbackError(err error) (status int, code string) {
 	switch {
-	case errors.Is(err, connect.ErrUnsupportedProvider):
+	case errors.Is(err, oauth.ErrUnsupportedProvider):
 		return http.StatusBadRequest, "unsupported_provider"
 	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrStateExpired):
 		return http.StatusBadRequest, "invalid_state"
-	case errors.Is(err, connect.ErrConsentDenied):
+	case errors.Is(err, oauth.ErrConsentDenied):
 		return http.StatusBadRequest, "access_denied"
-	case errors.Is(err, connect.ErrExchangeRejected):
+	case errors.Is(err, oauth.ErrExchangeRejected):
 		return http.StatusBadRequest, "exchange_failed"
-	case errors.Is(err, connect.ErrInsufficientScope):
+	case errors.Is(err, oauth.ErrInsufficientScope):
 		return http.StatusBadRequest, "insufficient_scope"
-	case errors.Is(err, connect.ErrInvalidIDToken):
+	case errors.Is(err, oauth.ErrInvalidIDToken):
 		return http.StatusBadGateway, "provider_error"
-	case errors.Is(err, connect.ErrProviderUnavailable):
+	case errors.Is(err, oauth.ErrProviderUnavailable):
 		return http.StatusBadGateway, "provider_unavailable"
 	case errors.Is(err, store.ErrAccountTaken):
 		return http.StatusConflict, "account_already_connected"

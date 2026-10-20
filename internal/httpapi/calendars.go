@@ -1,4 +1,4 @@
-package http
+package httpapi
 
 import (
 	"context"
@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/sebasBetancourt/relay/internal/calendar"
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/httpapi/middleware"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
@@ -37,7 +38,7 @@ type queryErrorBody struct {
 
 func handleListEvents(log *slog.Logger, cal CalendarReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		t, ok := TenantFromContext(r.Context())
+		t, ok := middleware.TenantFromContext(r.Context())
 		if !ok {
 			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
 			return
@@ -56,13 +57,13 @@ func handleListEvents(log *slog.Logger, cal CalendarReader) http.HandlerFunc {
 				log.Error("list events failed",
 					"err", err,
 					"account_id", accountID,
-					"request_id", RequestIDFromContext(r.Context()),
+					"request_id", middleware.RequestIDFromContext(r.Context()),
 				)
 			} else {
 				log.Info("list events rejected",
 					"reason", code,
 					"account_id", accountID,
-					"request_id", RequestIDFromContext(r.Context()),
+					"request_id", middleware.RequestIDFromContext(r.Context()),
 				)
 			}
 			if retryAfter > 0 {
@@ -128,13 +129,13 @@ func mapCalendarError(err error) (status int, code string, retryAfter time.Durat
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, "not_found", 0
-	case errors.Is(err, connect.ErrAccountRevoked):
+	case errors.Is(err, oauth.ErrAccountRevoked):
 		return http.StatusConflict, "account_revoked", 0
 	case errors.As(err, &rate):
 		return http.StatusTooManyRequests, "provider_rate_limited", rate.RetryAfter
 	case errors.Is(err, calendar.ErrCalendarNotFound):
 		return http.StatusNotFound, "not_found", 0
-	case errors.Is(err, connect.ErrProviderUnavailable), errors.Is(err, calendar.ErrProviderUnavailable):
+	case errors.Is(err, oauth.ErrProviderUnavailable), errors.Is(err, calendar.ErrProviderUnavailable):
 		return http.StatusBadGateway, "provider_unavailable", 0
 	case errors.Is(err, calendar.ErrProviderBadResponse):
 		return http.StatusBadGateway, "provider_error", 0

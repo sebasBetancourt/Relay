@@ -1,4 +1,4 @@
-package connect
+package oauth
 
 import (
 	"encoding/base64"

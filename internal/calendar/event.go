@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 )
 
 // Organizer is the optional event owner.
@@ -46,8 +46,8 @@ type Source interface {
 	ListEvents(ctx context.Context, accessToken string, q Query) (Page, error)
 }
 
-// TokenProvider loads/refreshes OAuth access tokens (connect.Service).
+// TokenProvider loads/refreshes OAuth access tokens (oauth.Service).
 type TokenProvider interface {
-	AccessToken(ctx context.Context, tenantID, accountID string) (connect.AccessToken, error)
-	RefreshAccessToken(ctx context.Context, tenantID, accountID string) (connect.AccessToken, error)
+	AccessToken(ctx context.Context, tenantID, accountID string) (oauth.AccessToken, error)
+	RefreshAccessToken(ctx context.Context, tenantID, accountID string) (oauth.AccessToken, error)
 }

@@ -1,4 +1,4 @@
-package http
+package httpapi
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
-// TestV1MeWithRealDB runs the whole chain: router → RequireAPIKey → store →
+// TestV1MeWithRealDB runs the whole chain: router → middleware.RequireAPIKey → store →
 // Postgres, then revokes the key and expects the door to close.
 func TestV1MeWithRealDB(t *testing.T) {
 	url := os.Getenv("TEST_DATABASE_URL")

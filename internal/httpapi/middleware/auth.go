@@ -1,7 +1,8 @@
-package http
+package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -37,7 +38,7 @@ func RequireAPIKey(log *slog.Logger, lookup TenantLookup, env apikey.Env) func(h
 					"request_id", RequestIDFromContext(r.Context()),
 				)
 				w.Header().Set("WWW-Authenticate", `Bearer realm="relay"`)
-				writeJSON(w, http.StatusUnauthorized, errorBody{Error: "unauthorized"})
+				writeError(w, http.StatusUnauthorized, "unauthorized")
 			}
 
 			key, ok := bearerToken(r.Header.Get("Authorization"))
@@ -69,7 +70,7 @@ func RequireAPIKey(log *slog.Logger, lookup TenantLookup, env apikey.Env) func(h
 					"err", err,
 					"request_id", RequestIDFromContext(r.Context()),
 				)
-				writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+				writeError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 
@@ -88,4 +89,14 @@ func bearerToken(header string) (string, bool) {
 	}
 	token = strings.TrimSpace(token)
 	return token, token != ""
+}
+
+// writeError writes {"error": code} with the same shape as the API's own
+// error responses, so a 401 from the middleware looks like any other error.
+func writeError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(struct {
+		Error string `json:"error"`
+	}{code})
 }

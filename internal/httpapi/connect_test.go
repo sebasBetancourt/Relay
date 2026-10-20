@@ -1,4 +1,4 @@
-package http
+package httpapi
 
 import (
 	"context"
@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/sebasBetancourt/relay/internal/apikey"
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
-// fakeStates records what the real connect.Service tries to persist.
+// fakeStates records what the real oauth.Service tries to persist.
 type fakeStates struct {
 	saved []store.OAuthState
 	err   error
@@ -42,17 +42,17 @@ type connectFixture struct {
 	tenant store.Tenant
 }
 
-// newConnectFixture wires the real router and the real connect.Service;
+// newConnectFixture wires the real router and the real oauth.Service;
 // only the tenant lookup and the state store are fakes.
 func newConnectFixture(t *testing.T, storeErr error) connectFixture {
 	t.Helper()
 	key := apikey.Generate(apikey.EnvTest)
 	tenant := store.Tenant{ID: "tenant-42", Name: "Acme", KeyPrefix: key.KeyPrefix}
 	states := &fakeStates{err: storeErr}
-	svc := connect.NewService(connect.Deps{
+	svc := oauth.NewService(oauth.Deps{
 		States: states,
-		Providers: map[connect.Provider]connect.ProviderSpec{
-			connect.ProviderGoogle: connect.GoogleSpec("client-123", "secret-xyz", "http://localhost:8080/v1/oauth/google/callback"),
+		Providers: map[oauth.Provider]oauth.ProviderSpec{
+			oauth.ProviderGoogle: oauth.GoogleSpec("client-123", "secret-xyz", "http://localhost:8080/v1/oauth/google/callback"),
 		},
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})

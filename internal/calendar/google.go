@@ -54,12 +54,12 @@ type googleEventsResponse struct {
 }
 
 type googleEvent struct {
-	ID        string          `json:"id"`
-	Summary   string          `json:"summary"`
-	Location  string          `json:"location"`
-	Start     googleDateTime  `json:"start"`
-	End       googleDateTime  `json:"end"`
-	Organizer *googlePerson   `json:"organizer"`
+	ID        string         `json:"id"`
+	Summary   string         `json:"summary"`
+	Location  string         `json:"location"`
+	Start     googleDateTime `json:"start"`
+	End       googleDateTime `json:"end"`
+	Organizer *googlePerson  `json:"organizer"`
 }
 
 type googleDateTime struct {

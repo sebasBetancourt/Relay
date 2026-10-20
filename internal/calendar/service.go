@@ -6,17 +6,17 @@ import (
 	"fmt"
 	"maps"
 
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 )
 
 // Service lists events using a TokenProvider and per-provider Sources.
 type Service struct {
 	tokens  TokenProvider
-	sources map[connect.Provider]Source
+	sources map[oauth.Provider]Source
 }
 
 // NewService wires token access to calendar Sources.
-func NewService(tokens TokenProvider, sources map[connect.Provider]Source) *Service {
+func NewService(tokens TokenProvider, sources map[oauth.Provider]Source) *Service {
 	return &Service{
 		tokens:  tokens,
 		sources: maps.Clone(sources),

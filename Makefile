@@ -1,4 +1,4 @@
-.PHONY: migrate-up migrate-down tenant
+.PHONY: build migrate-up migrate-down tenant
 
 # Load DATABASE_URL from .env when present (host port is 5435 in docker-compose).
 ifneq (,$(wildcard .env))
@@ -7,6 +7,11 @@ export
 endif
 
 DATABASE_URL ?= postgres://relay:relay@localhost:5435/relay?sslmode=disable
+
+# Compile both binaries into bin/ (gitignored): bin/relay and bin/relayctl.
+build:
+	go build -o bin/relay ./cmd/api
+	go build -o bin/relayctl ./cmd/relayctl
 
 migrate-up:
 	migrate -path migrations -database "$(DATABASE_URL)" up

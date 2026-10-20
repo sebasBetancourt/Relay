@@ -1,4 +1,4 @@
-package http
+package httpapi
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sebasBetancourt/relay/internal/apikey"
+	"github.com/sebasBetancourt/relay/internal/httpapi/middleware"
 )
 
 // Deps is everything the router needs, built once in main (no globals).
@@ -16,7 +17,7 @@ import (
 type Deps struct {
 	Log      *slog.Logger
 	DB       *pgxpool.Pool
-	Tenants  TenantLookup
+	Tenants  middleware.TenantLookup
 	Env      apikey.Env
 	Connect  Connector
 	Callback Callbacker
@@ -56,24 +57,8 @@ func NewRouter(d Deps) http.Handler {
 	v1.HandleFunc("GET /v1/me", handleMe)
 	v1.HandleFunc("GET /v1/connect/{provider}", handleConnect(log, d.Connect))
 	v1.HandleFunc("GET /v1/calendars/{id}/events", handleListEvents(log, d.Calendar))
-	mux.Handle("/v1/", RequireAPIKey(log, d.Tenants, d.Env)(v1))
+	mux.Handle("/v1/", middleware.RequireAPIKey(log, d.Tenants, d.Env)(v1))
 
-	// Outer runs first. RequestID must wrap Recover/Logger so they see the id in context.
-	return RequestID(Recover(log)(Logger(log)(mux)))
-}
-
-// handleMe returns the calling tenant: the simplest end-to-end check that
-// an API key works.
-func handleMe(w http.ResponseWriter, r *http.Request) {
-	t, ok := TenantFromContext(r.Context())
-	if !ok {
-		// Only possible if the route was mounted without RequireAPIKey.
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
-		return
-	}
-	writeJSON(w, http.StatusOK, struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		KeyPrefix string `json:"key_prefix"`
-	}{t.ID, t.Name, t.KeyPrefix})
+	// Outer runs first. middleware.RequestID must wrap Recover/middleware.Logger so they see the id in context.
+	return middleware.RequestID(middleware.Recover(log)(middleware.Logger(log)(mux)))
 }

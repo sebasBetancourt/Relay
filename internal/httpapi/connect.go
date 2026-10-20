@@ -1,4 +1,4 @@
-package http
+package httpapi
 
 import (
 	"context"
@@ -7,13 +7,14 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/httpapi/middleware"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
 // Connector is what the connect handler needs from internal/connect.
 type Connector interface {
-	Start(ctx context.Context, tenantID string, provider connect.Provider) (string, error)
+	Start(ctx context.Context, tenantID string, provider oauth.Provider) (string, error)
 }
 
 // handleConnect starts an OAuth connect (design.md, Request flow A.1–2).
@@ -24,18 +25,18 @@ type Connector interface {
 // and forwards the URL to its end user.
 func handleConnect(log *slog.Logger, c Connector) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenant, ok := TenantFromContext(r.Context())
+		tenant, ok := middleware.TenantFromContext(r.Context())
 		if !ok {
 			// Only possible if the route was mounted without RequireAPIKey.
 			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
 			return
 		}
-		provider := connect.Provider(r.PathValue("provider"))
+		provider := oauth.Provider(r.PathValue("provider"))
 
 		authURL, err := c.Start(r.Context(), tenant.ID, provider)
 		switch {
 		case err == nil:
-		case errors.Is(err, connect.ErrUnsupportedProvider):
+		case errors.Is(err, oauth.ErrUnsupportedProvider):
 			writeJSON(w, http.StatusBadRequest, errorBody{Error: "unsupported_provider"})
 			return
 		case errors.Is(err, store.ErrNotFound):
@@ -48,7 +49,7 @@ func handleConnect(log *slog.Logger, c Connector) http.HandlerFunc {
 				"err", err,
 				"tenant_id", tenant.ID,
 				"provider", provider,
-				"request_id", RequestIDFromContext(r.Context()),
+				"request_id", middleware.RequestIDFromContext(r.Context()),
 			)
 			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
 			return
@@ -58,7 +59,7 @@ func handleConnect(log *slog.Logger, c Connector) http.HandlerFunc {
 		log.Info("connect started",
 			"tenant_id", tenant.ID,
 			"provider", provider,
-			"request_id", RequestIDFromContext(r.Context()),
+			"request_id", middleware.RequestIDFromContext(r.Context()),
 		)
 		// The URL holds a one-time state: no proxy or browser may cache it.
 		w.Header().Set("Cache-Control", "no-store")

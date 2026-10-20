@@ -1,4 +1,4 @@
-package http
+package httpapi
 
 import (
 	"context"
@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/sebasBetancourt/relay/internal/apikey"
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
-// TestConnectGoogleWithRealDB runs router → RequireAPIKey → connect.Service
+// TestConnectGoogleWithRealDB runs router → middleware.RequireAPIKey → oauth.Service
 // → store → Postgres and checks the state in the Location is really stored.
 func TestConnectGoogleWithRealDB(t *testing.T) {
 	dbURL := os.Getenv("TEST_DATABASE_URL")
@@ -40,10 +40,10 @@ func TestConnectGoogleWithRealDB(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM tenants WHERE id = $1", tenant.ID)
 	})
 
-	svc := connect.NewService(connect.Deps{
+	svc := oauth.NewService(oauth.Deps{
 		States: store.NewOAuthStates(pool),
-		Providers: map[connect.Provider]connect.ProviderSpec{
-			connect.ProviderGoogle: connect.GoogleSpec("client-123", "secret-xyz", "http://localhost:8080/v1/oauth/google/callback"),
+		Providers: map[oauth.Provider]oauth.ProviderSpec{
+			oauth.ProviderGoogle: oauth.GoogleSpec("client-123", "secret-xyz", "http://localhost:8080/v1/oauth/google/callback"),
 		},
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})

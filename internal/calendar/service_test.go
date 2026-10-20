@@ -6,31 +6,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
 type fakeTokens struct {
-	access  connect.AccessToken
+	access  oauth.AccessToken
 	accessN int
-	refresh connect.AccessToken
+	refresh oauth.AccessToken
 	refErr  error
 	accErr  error
 	refN    int
 }
 
-func (f *fakeTokens) AccessToken(context.Context, string, string) (connect.AccessToken, error) {
+func (f *fakeTokens) AccessToken(context.Context, string, string) (oauth.AccessToken, error) {
 	f.accessN++
 	if f.accErr != nil {
-		return connect.AccessToken{}, f.accErr
+		return oauth.AccessToken{}, f.accErr
 	}
 	return f.access, nil
 }
 
-func (f *fakeTokens) RefreshAccessToken(context.Context, string, string) (connect.AccessToken, error) {
+func (f *fakeTokens) RefreshAccessToken(context.Context, string, string) (oauth.AccessToken, error) {
 	f.refN++
 	if f.refErr != nil {
-		return connect.AccessToken{}, f.refErr
+		return oauth.AccessToken{}, f.refErr
 	}
 	return f.refresh, nil
 }
@@ -58,9 +58,9 @@ func (f *fakeSource) ListEvents(_ context.Context, accessToken string, _ Query) 
 }
 
 func TestServiceListEventsOK(t *testing.T) {
-	tok := &fakeTokens{access: connect.AccessToken{Value: "a1", Provider: connect.ProviderGoogle}}
+	tok := &fakeTokens{access: oauth.AccessToken{Value: "a1", Provider: oauth.ProviderGoogle}}
 	src := &fakeSource{pages: []Page{{Events: []Event{{ID: "1", Title: "Hi", Provider: "google"}}}}}
-	svc := NewService(tok, map[connect.Provider]Source{connect.ProviderGoogle: src})
+	svc := NewService(tok, map[oauth.Provider]Source{oauth.ProviderGoogle: src})
 	page, err := svc.ListEvents(context.Background(), "t", "a", Query{})
 	if err != nil || len(page.Events) != 1 || src.n != 1 || tok.refN != 0 {
 		t.Fatalf("page=%+v err=%v calls=%d refresh=%d", page, err, src.n, tok.refN)
@@ -69,14 +69,14 @@ func TestServiceListEventsOK(t *testing.T) {
 
 func TestServiceRetriesOnceOn401(t *testing.T) {
 	tok := &fakeTokens{
-		access:  connect.AccessToken{Value: "old", Provider: connect.ProviderGoogle},
-		refresh: connect.AccessToken{Value: "new", Provider: connect.ProviderGoogle},
+		access:  oauth.AccessToken{Value: "old", Provider: oauth.ProviderGoogle},
+		refresh: oauth.AccessToken{Value: "new", Provider: oauth.ProviderGoogle},
 	}
 	src := &fakeSource{
 		errs:  []error{ErrTokenRejected, nil},
 		pages: []Page{{}, {Events: []Event{{ID: "ok"}}}},
 	}
-	svc := NewService(tok, map[connect.Provider]Source{connect.ProviderGoogle: src})
+	svc := NewService(tok, map[oauth.Provider]Source{oauth.ProviderGoogle: src})
 	page, err := svc.ListEvents(context.Background(), "t", "a", Query{})
 	if err != nil || page.Events[0].ID != "ok" || tok.refN != 1 || src.n != 2 {
 		t.Fatalf("page=%+v err=%v ref=%d n=%d", page, err, tok.refN, src.n)
@@ -88,11 +88,11 @@ func TestServiceRetriesOnceOn401(t *testing.T) {
 
 func TestServiceDouble401(t *testing.T) {
 	tok := &fakeTokens{
-		access:  connect.AccessToken{Value: "a", Provider: connect.ProviderGoogle},
-		refresh: connect.AccessToken{Value: "b", Provider: connect.ProviderGoogle},
+		access:  oauth.AccessToken{Value: "a", Provider: oauth.ProviderGoogle},
+		refresh: oauth.AccessToken{Value: "b", Provider: oauth.ProviderGoogle},
 	}
 	src := &fakeSource{errs: []error{ErrTokenRejected, ErrTokenRejected}}
-	svc := NewService(tok, map[connect.Provider]Source{connect.ProviderGoogle: src})
+	svc := NewService(tok, map[oauth.Provider]Source{oauth.ProviderGoogle: src})
 	_, err := svc.ListEvents(context.Background(), "t", "a", Query{})
 	if !errors.Is(err, ErrProviderBadResponse) || src.n != 2 || tok.refN != 1 {
 		t.Fatalf("err=%v n=%d ref=%d", err, src.n, tok.refN)
@@ -105,11 +105,11 @@ func TestServicePropagatesNotFoundAndRevoked(t *testing.T) {
 		err  error
 	}{
 		{"not found", store.ErrNotFound},
-		{"revoked", connect.ErrAccountRevoked},
+		{"revoked", oauth.ErrAccountRevoked},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tok := &fakeTokens{accErr: tt.err}
-			svc := NewService(tok, map[connect.Provider]Source{connect.ProviderGoogle: &fakeSource{}})
+			svc := NewService(tok, map[oauth.Provider]Source{oauth.ProviderGoogle: &fakeSource{}})
 			_, err := svc.ListEvents(context.Background(), "t", "a", Query{TimeMin: time.Now(), TimeMax: time.Now().Add(time.Hour)})
 			if !errors.Is(err, tt.err) {
 				t.Fatalf("err = %v", err)
@@ -119,8 +119,8 @@ func TestServicePropagatesNotFoundAndRevoked(t *testing.T) {
 }
 
 func TestServiceMissingSource(t *testing.T) {
-	tok := &fakeTokens{access: connect.AccessToken{Value: "a", Provider: connect.ProviderMicrosoft}}
-	svc := NewService(tok, map[connect.Provider]Source{})
+	tok := &fakeTokens{access: oauth.AccessToken{Value: "a", Provider: oauth.ProviderMicrosoft}}
+	svc := NewService(tok, map[oauth.Provider]Source{})
 	_, err := svc.ListEvents(context.Background(), "t", "a", Query{})
 	if err == nil {
 		t.Fatal("expected error")

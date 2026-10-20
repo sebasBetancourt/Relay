@@ -1,9 +1,14 @@
-package http
+// Package e2e runs the whole Relay API end to end, as a client would: real
+// router, real services, real Postgres, and a stateful fake Google. It only
+// uses exported APIs, so it breaks when the public contract breaks.
+package e2e
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,7 +21,8 @@ import (
 
 	"github.com/sebasBetancourt/relay/internal/apikey"
 	"github.com/sebasBetancourt/relay/internal/calendar"
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/httpapi"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/store"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakegoogle"
 	"github.com/sebasBetancourt/relay/internal/vault"
@@ -71,12 +77,12 @@ func newFlow(t *testing.T) *flow {
 		TimeZone: "UTC",
 	})
 
-	base := connect.GoogleSpec("flow-client", "flow-secret", redirect)
-	spec := connect.ProviderSpec{
+	base := oauth.GoogleSpec("flow-client", "flow-secret", redirect)
+	spec := oauth.ProviderSpec{
 		OAuth: &oauth2.Config{
 			ClientID: "flow-client", ClientSecret: "flow-secret", RedirectURL: redirect,
 			Endpoint: oauth2.Endpoint{AuthURL: g.AuthURL(), TokenURL: g.TokenURL()},
-			Scopes:   []string{connect.GoogleOpenID, connect.GoogleCalendarReadonly},
+			Scopes:   []string{oauth.GoogleOpenID, oauth.GoogleCalendarReadonly},
 		},
 		RequiredScope: base.RequiredScope,
 		Identify:      base.Identify,
@@ -95,24 +101,35 @@ func newFlow(t *testing.T) *flow {
 
 	httpClient := g.Client()
 	httpClient.Timeout = 5 * time.Second
-	connectSvc := connect.NewService(connect.Deps{
+	oauthSvc := oauth.NewService(oauth.Deps{
 		States: store.NewOAuthStates(pool), Accounts: accounts, Vault: vlt,
-		Providers:  map[connect.Provider]connect.ProviderSpec{connect.ProviderGoogle: spec},
+		Providers:  map[oauth.Provider]oauth.ProviderSpec{oauth.ProviderGoogle: spec},
 		HTTPClient: httpClient,
 		Log:        discardLogger(),
 	})
-	calSvc := calendar.NewService(connectSvc, map[connect.Provider]calendar.Source{
-		connect.ProviderGoogle: &calendar.GoogleSource{BaseURL: g.APIBaseURL(), HTTP: httpClient},
+	calSvc := calendar.NewService(oauthSvc, map[oauth.Provider]calendar.Source{
+		oauth.ProviderGoogle: &calendar.GoogleSource{BaseURL: g.APIBaseURL(), HTTP: httpClient},
 	})
 
 	return &flow{
 		t: t, ctx: ctx, pool: pool, tenants: tenants, accounts: accounts,
 		vlt: vlt, google: g, key: key, tenant: tenant,
-		router: NewRouter(Deps{
+		router: httpapi.NewRouter(httpapi.Deps{
 			Log: discardLogger(), DB: pool, Tenants: tenants, Env: apikey.EnvTest,
-			Connect: connectSvc, Callback: connectSvc, Calendar: calSvc,
+			Connect: oauthSvc, Callback: oauthSvc, Calendar: calSvc,
 		}),
 	}
+}
+
+// eventsPage is the public JSON contract of GET /v1/calendars/{id}/events,
+// declared here on purpose instead of reusing the handler's private type.
+type eventsPage struct {
+	Events        []calendar.Event `json:"events"`
+	NextPageToken string           `json:"next_page_token,omitempty"`
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func sanitizeName(s string) string {
@@ -272,7 +289,7 @@ func TestFlowHappyPath(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("events %d %s", rec.Code, rec.Body.String())
 	}
-	var page eventsResponse
+	var page eventsPage
 	_ = json.Unmarshal(rec.Body.Bytes(), &page)
 	if len(page.Events) != 1 || page.Events[0].Title != "Flow Meeting" {
 		t.Fatalf("events = %+v", page.Events)

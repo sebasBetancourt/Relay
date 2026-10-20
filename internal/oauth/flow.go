@@ -1,7 +1,7 @@
-// Package connect runs the OAuth connect flow: Start builds the consent URL;
+// Package oauth runs the OAuth connect flow: Start builds the consent URL;
 // Finish exchanges the callback code, encrypts tokens and persists the account.
-// It knows nothing about HTTP; internal/http maps its errors to status codes.
-package connect
+// It knows nothing about HTTP; internal/httpapi maps its errors to status codes.
+package oauth
 
 import (
 	"context"
@@ -82,7 +82,7 @@ type Service struct {
 	flight    singleflight.Group
 }
 
-// NewService wires the connect service. HTTPClient must have a Timeout.
+// NewService wires the OAuth service. HTTPClient must have a Timeout.
 func NewService(d Deps) *Service {
 	log := d.Log
 	if log == nil {

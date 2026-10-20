@@ -1,4 +1,4 @@
-package http
+package httpapi
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 
 	"github.com/sebasBetancourt/relay/internal/apikey"
 	"github.com/sebasBetancourt/relay/internal/calendar"
-	"github.com/sebasBetancourt/relay/internal/connect"
+	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
@@ -32,9 +32,9 @@ func (f *fakeCalendar) ListEvents(_ context.Context, _, _ string, q calendar.Que
 func calendarsRouter(t *testing.T, cal CalendarReader, key apikey.Key) http.Handler {
 	t.Helper()
 	return NewRouter(Deps{
-		Log:     discardLogger(),
-		Tenants: &fakeLookup{tenants: map[string]store.Tenant{key.Hash: {ID: "tenant-1", Name: "T", KeyPrefix: key.KeyPrefix}}},
-		Env:     apikey.EnvTest,
+		Log:      discardLogger(),
+		Tenants:  &fakeLookup{tenants: map[string]store.Tenant{key.Hash: {ID: "tenant-1", Name: "T", KeyPrefix: key.KeyPrefix}}},
+		Env:      apikey.EnvTest,
 		Calendar: cal,
 	})
 }
@@ -131,7 +131,7 @@ func TestListEventsErrorTable(t *testing.T) {
 		retry      string
 	}{
 		{"not found", store.ErrNotFound, 404, "not_found", ""},
-		{"revoked", connect.ErrAccountRevoked, 409, "account_revoked", ""},
+		{"revoked", oauth.ErrAccountRevoked, 409, "account_revoked", ""},
 		{"rate", &calendar.RateLimitedError{RetryAfter: 7 * time.Second}, 429, "provider_rate_limited", "7"},
 		{"unavailable", calendar.ErrProviderUnavailable, 502, "provider_unavailable", ""},
 		{"bad response", calendar.ErrProviderBadResponse, 502, "provider_error", ""},
