@@ -86,3 +86,25 @@ func (s *OAuthStates) Consume(ctx context.Context, state, provider string) (Cons
 	}
 	return out, nil
 }
+
+// DeleteExpired removes up to limit expired oauth_states rows.
+// Uses FOR UPDATE SKIP LOCKED so concurrent janitors (or a Consume in
+// flight) skip locked rows instead of blocking. Returns how many were deleted.
+func (s *OAuthStates) DeleteExpired(ctx context.Context, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	tag, err := s.db.Exec(ctx, `
+		DELETE FROM oauth_states
+		WHERE state IN (
+			SELECT state FROM oauth_states
+			WHERE expires_at < now()
+			ORDER BY expires_at
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)`, limit)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired oauth states: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

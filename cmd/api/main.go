@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/config"
 	"github.com/sebasBetancourt/relay/internal/connect"
 	relayhttp "github.com/sebasBetancourt/relay/internal/http"
+	"github.com/sebasBetancourt/relay/internal/janitor"
 	"github.com/sebasBetancourt/relay/internal/store"
 	"github.com/sebasBetancourt/relay/internal/vault"
 )
@@ -41,11 +43,11 @@ func main() {
 		log.Error("db connect failed", "err", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
 
 	apiHTTP := &http.Client{Timeout: 10 * time.Second}
+	oauthStates := store.NewOAuthStates(pool)
 	connectSvc := connect.NewService(connect.Deps{
-		States:   store.NewOAuthStates(pool),
+		States:   oauthStates,
 		Accounts: store.NewAccounts(pool),
 		Vault:    vlt,
 		Providers: map[connect.Provider]connect.ProviderSpec{
@@ -77,6 +79,20 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	// Janitor shares the pool: cancel it before pool.Close on shutdown.
+	janitorCtx, janitorCancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		janitor.Run(janitorCtx, janitor.Config{
+			Log:      log,
+			Purger:   oauthStates,
+			Interval: 10 * time.Minute,
+			Batch:    1000,
+		})
+	}()
+
 	go func() {
 		log.Info("starting relay api", "port", cfg.Port, "env", cfg.Env)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -90,10 +106,13 @@ func main() {
 	<-stop
 
 	log.Info("shutting down")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("forced shutdown", "err", err)
 	}
+	janitorCancel()
+	wg.Wait()
+	pool.Close()
 	log.Info("bye")
 }

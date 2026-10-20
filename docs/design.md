@@ -241,7 +241,7 @@ Short-lived rows from connect step 1 (~10 min). Used only until callback.
 | `expires_at` | `timestamptz` | Validity window (~10 min). |
 | `used_at` | `timestamptz` | NULL until consumed. Set on successful callback so the same `state` cannot be reused (replay). |
 
-Optional: periodic job deletes rows where `expires_at < now()` or `used_at IS NOT NULL`.
+**Cleanup (implemented):** a janitor inside the API process runs on startup and every 10 minutes. It deletes expired rows in batches (`LIMIT 1000`) with `FOR UPDATE SKIP LOCKED`, so multiple replicas can purge concurrently without blocking each other or an in-flight `Consume`. `used_at` is unused (design says delete, not mark) and may be dropped later.
 
 #### FK / delete summary
 

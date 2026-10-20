@@ -142,6 +142,103 @@ func TestOAuthStatesConsumeExpired(t *testing.T) {
 	}
 }
 
+func TestOAuthStatesDeleteExpired(t *testing.T) {
+	tenants := newTestTenants(t)
+	states := NewOAuthStates(tenants.db)
+	ctx := context.Background()
+	tenant := createTenant(t, tenants, "Purge", apikey.Generate(apikey.EnvTest))
+
+	prefix := "purge-" + tenant.ID[:8] + "-"
+	for i := 0; i < 5; i++ {
+		st := OAuthState{
+			State: prefix + "old-" + string(rune('a'+i)), TenantID: tenant.ID,
+			Provider: "google", CodeVerifier: "v",
+		}
+		if err := states.Create(ctx, st, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		st := OAuthState{
+			State: prefix + "new-" + string(rune('a'+i)), TenantID: tenant.ID,
+			Provider: "google", CodeVerifier: "v",
+		}
+		if err := states.Create(ctx, st, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := tenants.db.Exec(ctx, `
+		UPDATE oauth_states SET expires_at = now() - interval '1 minute'
+		WHERE state LIKE $1`, prefix+"old-%")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// DeleteExpired removes any expired row in the DB (other packages may
+	// leave some), so assert on our own keys — not exact batch totals.
+	for i := 0; i < 10; i++ {
+		if _, err := states.DeleteExpired(ctx, 2); err != nil {
+			t.Fatal(err)
+		}
+		var dead int
+		_ = tenants.db.QueryRow(ctx, `SELECT count(*) FROM oauth_states WHERE state LIKE $1`, prefix+"old-%").Scan(&dead)
+		if dead == 0 {
+			break
+		}
+	}
+	var dead int
+	_ = tenants.db.QueryRow(ctx, `SELECT count(*) FROM oauth_states WHERE state LIKE $1`, prefix+"old-%").Scan(&dead)
+	if dead != 0 {
+		t.Fatalf("dead left = %d", dead)
+	}
+	var alive int
+	err = tenants.db.QueryRow(ctx, `SELECT count(*) FROM oauth_states WHERE state LIKE $1`, prefix+"new-%").Scan(&alive)
+	if err != nil || alive != 2 {
+		t.Fatalf("alive = %d err=%v", alive, err)
+	}
+
+	// Parallel DeleteExpired must not error (SKIP LOCKED).
+	for i := 0; i < 10; i++ {
+		st := OAuthState{
+			State: prefix + "par-" + string(rune('a'+i)), TenantID: tenant.ID,
+			Provider: "google", CodeVerifier: "v",
+		}
+		if err := states.Create(ctx, st, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _ = tenants.db.Exec(ctx, `
+		UPDATE oauth_states SET expires_at = now() - interval '1 minute'
+		WHERE state LIKE $1`, prefix+"par-%")
+
+	errCh := make(chan error, 2)
+	var n1, n2 int64
+	go func() {
+		var e error
+		n1, e = states.DeleteExpired(ctx, 100)
+		errCh <- e
+	}()
+	go func() {
+		var e error
+		n2, e = states.DeleteExpired(ctx, 100)
+		errCh <- e
+	}()
+	for range 2 {
+		if e := <-errCh; e != nil {
+			t.Fatal(e)
+		}
+	}
+	if n1+n2 < 10 {
+		// May delete exactly 10; both succeed.
+		t.Fatalf("parallel deleted %d+%d", n1, n2)
+	}
+	var left int
+	_ = tenants.db.QueryRow(ctx, `SELECT count(*) FROM oauth_states WHERE state LIKE $1`, prefix+"par-%").Scan(&left)
+	if left != 0 {
+		t.Fatalf("par left = %d", left)
+	}
+}
+
 func TestOAuthStatesConsumeWrongProvider(t *testing.T) {
 	tenants := newTestTenants(t)
 	states := NewOAuthStates(tenants.db)

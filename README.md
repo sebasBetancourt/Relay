@@ -34,6 +34,20 @@ Notes:
 - If host port **8080** is already in use, stop the other process or change the API port mapping in `docker-compose.yml`.
 - The API fails fast on startup and lists every missing or invalid variable at once. `RELAY_ENV` (`live` or `test`) is required.
 - Google credentials: follow [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
+- Expired `oauth_states` rows are purged by a janitor inside the API (on startup and every 10 minutes).
+
+## Running the tests
+
+```bash
+# Unit tests (no DB): always safe
+go test ./internal/apikey ./internal/vault ./internal/janitor ./internal/testutil/...
+
+# Full suite including integration (Postgres on :5435)
+TEST_DATABASE_URL='postgres://relay:relay@localhost:5435/relay?sslmode=disable' \
+  go test -race -count=1 ./...
+```
+
+Integration tests use a **stateful fake Google** (`internal/testutil/fakegoogle`): it checks PKCE, one-time codes, refresh/access validity and calendar Bearer tokens. The end-to-end flow suite is `go test -run Flow ./internal/http`.
 
 ## Create a tenant and test your API key
 
