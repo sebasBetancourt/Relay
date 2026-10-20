@@ -52,7 +52,9 @@ type StateStore interface {
 type AccountStore interface {
 	SaveConnection(ctx context.Context, c store.Connection) (accountID string, err error)
 	AccountForTenant(ctx context.Context, accountID, tenantID string) (store.StoredAccount, error)
-	UpdateTokens(ctx context.Context, accountID string, u store.TokenUpdate) error
+	// RefreshLocked runs fn under a per-account row lock shared by every
+	// replica, and stores fn's update in the same transaction.
+	RefreshLocked(ctx context.Context, accountID string, fn func(cur store.StoredAccount) (*store.TokenUpdate, error)) error
 	MarkRevoked(ctx context.Context, accountID string) error
 }
 
@@ -102,6 +104,7 @@ func NewService(d Deps) *Service {
 type Result struct {
 	AccountID string
 	Provider  Provider
+	Email     string // may be empty
 }
 
 // Start begins a connect for tenantID and returns the consent URL.
@@ -196,6 +199,7 @@ func (s *Service) Finish(ctx context.Context, provider Provider, state, code, pr
 		TenantID:          consumed.TenantID,
 		Provider:          string(provider),
 		ProviderAccountID: sub,
+		Email:             ident.Email,
 		AccessEnc:         accessEnc,
 		AccessNonce:       accessNonce,
 		RefreshEnc:        refreshEnc,
@@ -207,7 +211,7 @@ func (s *Service) Finish(ctx context.Context, provider Provider, state, code, pr
 		return Result{}, err
 	}
 
-	return Result{AccountID: accountID, Provider: provider}, nil
+	return Result{AccountID: accountID, Provider: provider, Email: ident.Email}, nil
 }
 
 func mapExchangeError(err error) error {

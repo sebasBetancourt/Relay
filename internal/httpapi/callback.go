@@ -62,7 +62,8 @@ func handleCallback(log *slog.Logger, c Callbacker) http.HandlerFunc {
 			Status    string `json:"status"`
 			Provider  string `json:"provider"`
 			AccountID string `json:"account_id"`
-		}{"connected", string(res.Provider), res.AccountID})
+			Email     string `json:"email,omitempty"`
+		}{"connected", string(res.Provider), res.AccountID, res.Email})
 	}
 }
 

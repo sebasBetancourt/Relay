@@ -165,7 +165,7 @@ Relay stores a one-time `state` and the PKCE `code_verifier` in `oauth_states` f
 `GET /v1/oauth/{provider}/callback` is **public** (the browser has no API key). Security is the one-time `state`. On success:
 
 ```json
-{"status":"connected","provider":"google","account_id":"…"}
+{"status":"connected","provider":"google","account_id":"…","email":"ana@gmail.com"}
 ```
 
 Tokens are encrypted (AES-256-GCM) and never returned in the body. Reloading the same callback URL returns `400 {"error":"invalid_state"}`.

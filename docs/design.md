@@ -204,6 +204,7 @@ One tenant can have many keys (rotation, multiple environments). Hash is SHA-256
 | `tenant_id` | `uuid` | FK → `tenants(id)` **ON DELETE CASCADE** (if the tenant goes, its accounts go). |
 | `provider` | `enum` (`google`, `microsoft`) | Enum so the DB rejects bad values — not free text. |
 | `provider_account_id` | `text` | Stable id (or email) of the account at Google/MS. |
+| `email` | `text` | Optional, informational: Google `email` (only if verified) or Microsoft Graph `mail`/`userPrincipalName`. Never a key; updated on reconnect. |
 | `status` | `enum` (`active`, `revoked`, `disconnected`, `error`) | Keep it small for v0.1. Use `error` when refresh succeeded at the provider but saving the new tokens failed. Expiry lives on tokens/`expires_at`, not as a status. |
 | `created_at` | `timestamptz` | |
 
@@ -259,7 +260,8 @@ Short-lived rows from connect step 1 (~10 min). Used only until callback.
 | --- | --- | --- |
 | Token leak (DB stolen) | Attacker can call Google/MS as the user | Encrypt at rest (AES-256-GCM), key outside the DB; mass revoke + anomaly monitoring |
 | Encryption key lost or leaked | Cannot decrypt tokens; full data exposure if leaked | v0.1: key in env/secret manager, never in DB or repo; KMS + rotation later |
-| Microsoft refresh token rotation (save fails) | Old refresh invalid; API thinks it still has access | Persist new refresh in a transaction before using the new access token; on save failure mark account `error` and stop |
+| Microsoft refresh token rotation (save fails) | The rotated refresh token is lost | The refresh runs inside a transaction holding the token row lock, and the new refresh token is written before the new access token is returned. If the commit fails, the request fails (500) and the previous refresh token stays: Microsoft keeps it valid until it expires, so the next request retries. If the provider rejects it, `invalid_grant` revokes the account (409, reconnect). |
+| Concurrent refresh across replicas | Two replicas redeem the same refresh token; with rotation one of them stores an older token | `oauth_tokens` row lock (`SELECT … FOR UPDATE`) around every refresh; a replica that waited re-reads the row and reuses the token the other one stored. `singleflight` collapses callers inside one replica. |
 | User revokes access in Google/MS | Calls fail with `invalid_grant` | Mark account `revoked`, delete tokens, return **409** (see Request flow §7) |
 | Provider rate limits (429) | Client errors / degraded UX | Exponential backoff honoring `Retry-After`; cache and queues in v0.2 |
 | Google doesn't return refresh_token | Cannot refresh; reconnect required often | Request `access_type=offline` and `prompt=consent` |

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -214,5 +215,158 @@ func TestAccountsPreserveRefreshWhenMissing(t *testing.T) {
 	}
 	if !bytes.Equal(refreshEnc, []byte("r1")) || !bytes.Equal(refreshNonce, []byte("rn1")) {
 		t.Fatalf("refresh not preserved: enc=%q nonce=%q", refreshEnc, refreshNonce)
+	}
+}
+
+func seedTokenAccount(t *testing.T, accounts *Accounts, tenantID, sub, email string) string {
+	t.Helper()
+	id, err := accounts.SaveConnection(context.Background(), Connection{
+		TenantID: tenantID, Provider: "microsoft", ProviderAccountID: sub, Email: email,
+		AccessEnc: []byte("access-0"), AccessNonce: []byte("nonce-a-0"),
+		RefreshEnc: []byte("refresh-0"), RefreshNonce: []byte("nonce-r-0"),
+		ExpiresAt: time.Now().UTC().Add(-time.Minute),
+		Scopes:    []string{"Calendars.Read"},
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return id
+}
+
+func TestAccountsEmail(t *testing.T) {
+	tenants := newTestTenants(t)
+	accounts := NewAccounts(tenants.db)
+	ctx := context.Background()
+	tenant := createTenant(t, tenants, "Email", apikey.Generate(apikey.EnvTest))
+	sub := "ms-email-" + tenant.ID[:8]
+
+	id := seedTokenAccount(t, accounts, tenant.ID, sub, "ana@outlook.com")
+	email := func() string {
+		t.Helper()
+		a, err := accounts.AccountForTenant(ctx, id, tenant.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a.Email
+	}
+	if got := email(); got != "ana@outlook.com" {
+		t.Fatalf("email = %q", got)
+	}
+
+	// Reconnect without an email (provider returned none): keep the stored one.
+	seedTokenAccount(t, accounts, tenant.ID, sub, "")
+	if got := email(); got != "ana@outlook.com" {
+		t.Fatalf("empty email on reconnect overwrote it: %q", got)
+	}
+
+	// The user renamed their mailbox: the new email wins.
+	seedTokenAccount(t, accounts, tenant.ID, sub, "ana.p@outlook.com")
+	if got := email(); got != "ana.p@outlook.com" {
+		t.Fatalf("email = %q, want the new one", got)
+	}
+}
+
+func TestRefreshLockedAppliesUpdate(t *testing.T) {
+	tenants := newTestTenants(t)
+	accounts := NewAccounts(tenants.db)
+	ctx := context.Background()
+	tenant := createTenant(t, tenants, "RefreshLocked", apikey.Generate(apikey.EnvTest))
+	id := seedTokenAccount(t, accounts, tenant.ID, "ms-lock-"+tenant.ID[:8], "")
+
+	newExp := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+	err := accounts.RefreshLocked(ctx, id, func(cur StoredAccount) (*TokenUpdate, error) {
+		if cur.ID != id || !bytes.Equal(cur.RefreshEnc, []byte("refresh-0")) || cur.TenantID != tenant.ID {
+			t.Errorf("fn got %+v", cur)
+		}
+		return &TokenUpdate{
+			AccessEnc: []byte("access-1"), AccessNonce: []byte("nonce-a-1"),
+			RefreshEnc: []byte("refresh-1"), RefreshNonce: []byte("nonce-r-1"),
+			ExpiresAt: newExp,
+		}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := accounts.AccountForTenant(ctx, id, tenant.ID)
+	if !bytes.Equal(a.RefreshEnc, []byte("refresh-1")) || !bytes.Equal(a.RefreshNonce, []byte("nonce-r-1")) || !a.ExpiresAt.Equal(newExp) {
+		t.Fatalf("update not stored: %+v", a)
+	}
+
+	// fn error → rollback: nothing changes.
+	boom := errors.New("provider down")
+	err = accounts.RefreshLocked(ctx, id, func(StoredAccount) (*TokenUpdate, error) {
+		return nil, boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want fn error", err)
+	}
+	b, _ := accounts.AccountForTenant(ctx, id, tenant.ID)
+	if !bytes.Equal(b.AccessEnc, a.AccessEnc) {
+		t.Fatal("a failed fn must not change the row")
+	}
+
+	// Revoked accounts have no token row → ErrNotFound, fn never runs.
+	if err := accounts.MarkRevoked(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	err = accounts.RefreshLocked(ctx, id, func(StoredAccount) (*TokenUpdate, error) {
+		t.Error("fn must not run for a revoked account")
+		return nil, nil
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRefreshLockedSerializesReplicas uses two pools, as two API replicas
+// would: the second caller waits for the first and then sees its update.
+func TestRefreshLockedSerializesReplicas(t *testing.T) {
+	tenants := newTestTenants(t)
+	ctx := context.Background()
+	tenant := createTenant(t, tenants, "Replicas", apikey.Generate(apikey.EnvTest))
+	replicaA := NewAccounts(tenants.db)
+	id := seedTokenAccount(t, replicaA, tenant.ID, "ms-replicas-"+tenant.ID[:8], "")
+
+	otherPool, err := NewPool(ctx, os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(otherPool.Close)
+	replicaB := NewAccounts(otherPool)
+
+	inA := make(chan struct{})
+	var bSaw []byte
+	errs := make(chan error, 2)
+
+	go func() {
+		errs <- replicaA.RefreshLocked(ctx, id, func(StoredAccount) (*TokenUpdate, error) {
+			close(inA)
+			time.Sleep(200 * time.Millisecond) // a slow provider call while holding the lock
+			return &TokenUpdate{
+				AccessEnc: []byte("access-A"), AccessNonce: []byte("nonce-a-A"),
+				RefreshEnc: []byte("refresh-A"), RefreshNonce: []byte("nonce-r-A"),
+				ExpiresAt: time.Now().UTC().Add(time.Hour),
+			}, nil
+		})
+	}()
+	<-inA // A holds the row lock now
+	start := time.Now()
+	go func() {
+		errs <- replicaB.RefreshLocked(ctx, id, func(cur StoredAccount) (*TokenUpdate, error) {
+			bSaw = cur.RefreshEnc
+			return nil, nil
+		})
+	}()
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if waited := time.Since(start); waited < 100*time.Millisecond {
+		t.Fatalf("replica B did not wait for the lock (%v)", waited)
+	}
+	if !bytes.Equal(bSaw, []byte("refresh-A")) {
+		t.Fatalf("replica B saw %q, want A's rotated refresh token", bSaw)
 	}
 }

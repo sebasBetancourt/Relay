@@ -126,3 +126,17 @@ func TestCallbackSuccess(t *testing.T) {
 		t.Fatalf("finish args %+v", cb.last)
 	}
 }
+
+func TestCallbackSuccessIncludesEmail(t *testing.T) {
+	cb := &fakeCallback{res: oauth.Result{AccountID: "acct-ms", Provider: oauth.ProviderMicrosoft, Email: "ana@outlook.com"}}
+	router := NewRouter(Deps{Log: discardLogger(), Callback: cb, Env: apikey.EnvTest, Tenants: &fakeLookup{}})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/oauth/microsoft/callback?state=st&code=cd", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"status":"connected","provider":"microsoft","account_id":"acct-ms","email":"ana@outlook.com"}` {
+		t.Fatalf("body = %s", got)
+	}
+}

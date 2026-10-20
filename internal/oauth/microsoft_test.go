@@ -283,7 +283,7 @@ func TestFinishMicrosoft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	if res.Provider != ProviderMicrosoft {
+	if res.Provider != ProviderMicrosoft || res.Email != "ana@outlook.com" {
 		t.Fatalf("result = %+v", res)
 	}
 
@@ -307,7 +307,7 @@ func TestFinishMicrosoft(t *testing.T) {
 		t.Fatalf("saved %d connections", len(accounts.saved))
 	}
 	c := accounts.saved[0]
-	if c.Provider != "microsoft" || c.ProviderAccountID != "ms-user-1" || c.TenantID != "tenant-1" {
+	if c.Provider != "microsoft" || c.ProviderAccountID != "ms-user-1" || c.TenantID != "tenant-1" || c.Email != "ana@outlook.com" {
 		t.Fatalf("connection = %+v", c)
 	}
 	plain, err := vlt.Decrypt(c.RefreshEnc, c.RefreshNonce, tokenAAD("tenant-1", "microsoft", "ms-user-1", "refresh_token"))

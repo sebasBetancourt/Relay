@@ -40,8 +40,8 @@ func (f *fakeAccounts) AccountForTenant(context.Context, string, string) (store.
 	return store.StoredAccount{}, store.ErrNotFound
 }
 
-func (f *fakeAccounts) UpdateTokens(context.Context, string, store.TokenUpdate) error {
-	return nil
+func (f *fakeAccounts) RefreshLocked(context.Context, string, func(store.StoredAccount) (*store.TokenUpdate, error)) error {
+	return store.ErrNotFound
 }
 
 func (f *fakeAccounts) MarkRevoked(context.Context, string) error { return nil }

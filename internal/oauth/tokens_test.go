@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,11 +19,17 @@ import (
 )
 
 type tokenFakeAccounts struct {
-	mu      sync.Mutex
-	acct    store.StoredAccount
-	updates []store.TokenUpdate
-	revoked int
-	getErr  error
+	mu    sync.Mutex
+	rowMu sync.Mutex // plays the Postgres row lock in RefreshLocked
+	acct  store.StoredAccount
+	// beforeLock runs right before the "lock" is taken: lets a test play
+	// another replica that refreshes while this request waits.
+	beforeLock func(f *tokenFakeAccounts)
+	// commitErr makes RefreshLocked fail after fn succeeded (lost commit).
+	commitErr error
+	updates   []store.TokenUpdate
+	revoked   int
+	getErr    error
 }
 
 func (f *tokenFakeAccounts) SaveConnection(context.Context, store.Connection) (string, error) {
@@ -38,7 +45,35 @@ func (f *tokenFakeAccounts) AccountForTenant(context.Context, string, string) (s
 	return f.acct, nil
 }
 
-func (f *tokenFakeAccounts) UpdateTokens(_ context.Context, _ string, u store.TokenUpdate) error {
+// RefreshLocked mirrors the store: one caller at a time, fn sees the latest
+// row, and its update is applied before the "lock" is released.
+func (f *tokenFakeAccounts) RefreshLocked(_ context.Context, _ string, fn func(store.StoredAccount) (*store.TokenUpdate, error)) error {
+	if f.beforeLock != nil {
+		f.beforeLock(f)
+	}
+	f.rowMu.Lock()
+	defer f.rowMu.Unlock()
+
+	f.mu.Lock()
+	cur := f.acct
+	f.mu.Unlock()
+	if cur.Status != "active" || !cur.HasTokens {
+		return store.ErrNotFound
+	}
+	u, err := fn(cur)
+	if err != nil {
+		return err
+	}
+	if f.commitErr != nil {
+		return f.commitErr // rolled back: the update is lost
+	}
+	if u != nil {
+		f.apply(*u)
+	}
+	return nil
+}
+
+func (f *tokenFakeAccounts) apply(u store.TokenUpdate) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.updates = append(f.updates, u)
@@ -49,7 +84,6 @@ func (f *tokenFakeAccounts) UpdateTokens(_ context.Context, _ string, u store.To
 		f.acct.RefreshNonce = u.RefreshNonce
 	}
 	f.acct.ExpiresAt = u.ExpiresAt
-	return nil
 }
 
 func (f *tokenFakeAccounts) MarkRevoked(context.Context, string) error {
@@ -322,5 +356,84 @@ func TestAccessTokenSingleflight(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	}
+}
+
+// tokenServer answers the token endpoint with body/status and counts calls.
+func tokenServer(t *testing.T, status int, body string, calls *atomic.Int32) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls != nil {
+			calls.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// Microsoft returns interaction_required when MFA, Conditional Access or new
+// consent needs the user: only a new connect fixes it.
+func TestAccessTokenInteractionRequiredRevokes(t *testing.T) {
+	v := testVault(t)
+	fa := &tokenFakeAccounts{acct: seedActiveAccount(t, v, time.Now().Add(-time.Minute))}
+	srv := tokenServer(t, http.StatusBadRequest,
+		`{"error":"interaction_required","error_description":"AADSTS50076: multi-factor authentication required"}`, nil)
+
+	_, err := tokenService(t, fa, v, srv.URL, nil).AccessToken(context.Background(), "tenant-1", "acct-1")
+	if !errors.Is(err, ErrAccountRevoked) || fa.revoked != 1 {
+		t.Fatalf("err=%v revoked=%d, want ErrAccountRevoked and 1 revoke", err, fa.revoked)
+	}
+}
+
+// Another replica refreshes while this request waits for the row lock: this
+// request must reuse that token, not refresh again (with Microsoft, a second
+// refresh would rotate the token the other replica just stored).
+func TestAccessTokenUsesTokenRefreshedByOtherReplica(t *testing.T) {
+	v := testVault(t)
+	fa := &tokenFakeAccounts{acct: seedActiveAccount(t, v, time.Now().Add(-time.Minute))}
+	fa.beforeLock = func(f *tokenFakeAccounts) {
+		enc, nonce := encryptToken(t, v, "tenant-1", "google", "sub-1", "access_token", "access-from-replica-b")
+		f.mu.Lock()
+		f.acct.AccessEnc, f.acct.AccessNonce = enc, nonce
+		f.acct.ExpiresAt = time.Now().Add(time.Hour)
+		f.mu.Unlock()
+	}
+	var calls atomic.Int32
+	srv := tokenServer(t, http.StatusOK, `{"access_token":"should-not-be-used","expires_in":3600}`, &calls)
+
+	tok, err := tokenService(t, fa, v, srv.URL, nil).AccessToken(context.Background(), "tenant-1", "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.Value != "access-from-replica-b" {
+		t.Fatalf("value = %q, want the token the other replica stored", tok.Value)
+	}
+	if calls.Load() != 0 || len(fa.updates) != 0 {
+		t.Fatalf("refresh calls = %d, updates = %d, want 0 and 0", calls.Load(), len(fa.updates))
+	}
+}
+
+// The provider rotated the refresh token but the commit failed: return an
+// error, do not revoke, and keep the previous refresh token so the next
+// request can retry.
+func TestAccessTokenLostCommitKeepsAccount(t *testing.T) {
+	v := testVault(t)
+	acct := seedActiveAccount(t, v, time.Now().Add(-time.Minute))
+	fa := &tokenFakeAccounts{acct: acct, commitErr: errors.New("connection reset")}
+	srv := tokenServer(t, http.StatusOK,
+		`{"access_token":"access-new","refresh_token":"refresh-rotated","expires_in":3600}`, nil)
+
+	_, err := tokenService(t, fa, v, srv.URL, nil).AccessToken(context.Background(), "tenant-1", "acct-1")
+	if err == nil || errors.Is(err, ErrAccountRevoked) {
+		t.Fatalf("err = %v, want a plain (500) error", err)
+	}
+	if fa.revoked != 0 || fa.acct.Status != "active" {
+		t.Fatal("a lost commit must not revoke the account")
+	}
+	if !bytes.Equal(fa.acct.RefreshEnc, acct.RefreshEnc) {
+		t.Fatal("the previous refresh token must stay in place")
 	}
 }

@@ -21,6 +21,7 @@ type Connection struct {
 	TenantID          string
 	Provider          string
 	ProviderAccountID string
+	Email             string // optional; empty keeps the stored one on reconnect
 	AccessEnc         []byte
 	AccessNonce       []byte
 	RefreshEnc        []byte // nil when the provider did not return a refresh token
@@ -36,6 +37,7 @@ type StoredAccount struct {
 	TenantID          string
 	Provider          string
 	ProviderAccountID string
+	Email             string
 	Status            string
 	AccessEnc         []byte
 	AccessNonce       []byte
@@ -68,14 +70,15 @@ func (s *Accounts) AccountForTenant(ctx context.Context, accountID, tenantID str
 	var a StoredAccount
 	var expiresAt *time.Time
 	err := s.db.QueryRow(ctx, `
-		SELECT a.id::text, a.tenant_id::text, a.provider::text, a.provider_account_id, a.status::text,
+		SELECT a.id::text, a.tenant_id::text, a.provider::text, a.provider_account_id,
+		       COALESCE(a.email, ''), a.status::text,
 		       t.access_token_enc, t.access_nonce, t.refresh_token_enc, t.refresh_nonce, t.expires_at
 		FROM connected_accounts a
 		LEFT JOIN oauth_tokens t ON t.account_id = a.id
 		WHERE a.id = $1 AND a.tenant_id = $2`,
 		accountID, tenantID,
 	).Scan(
-		&a.ID, &a.TenantID, &a.Provider, &a.ProviderAccountID, &a.Status,
+		&a.ID, &a.TenantID, &a.Provider, &a.ProviderAccountID, &a.Email, &a.Status,
 		&a.AccessEnc, &a.AccessNonce, &a.RefreshEnc, &a.RefreshNonce, &expiresAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -97,7 +100,16 @@ func (s *Accounts) AccountForTenant(ctx context.Context, accountID, tenantID str
 
 // UpdateTokens replaces the access token (and refresh when provided).
 func (s *Accounts) UpdateTokens(ctx context.Context, accountID string, u TokenUpdate) error {
-	tag, err := s.db.Exec(ctx, `
+	return updateTokens(ctx, s.db, accountID, u)
+}
+
+// execer is what pgxpool.Pool and pgx.Tx have in common for writes.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func updateTokens(ctx context.Context, db execer, accountID string, u TokenUpdate) error {
+	tag, err := db.Exec(ctx, `
 		UPDATE oauth_tokens SET
 			access_token_enc  = $2,
 			access_nonce      = $3,
@@ -119,6 +131,64 @@ func (s *Accounts) UpdateTokens(ctx context.Context, accountID string, u TokenUp
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// RefreshLocked serializes token refreshes for one account across every API
+// replica. It locks the account's oauth_tokens row (SELECT … FOR UPDATE),
+// re-reads it, and calls fn with that fresh copy: if another replica
+// refreshed while we waited, fn sees the new token and can return a nil
+// update. A non-nil update is written in the same transaction, so a
+// rotated refresh token (Microsoft) is stored before the lock is released.
+//
+// fn runs while the row lock and a pool connection are held, so it must be
+// bounded (the provider call uses an HTTP client with a timeout) and must
+// not write the same account through another connection (e.g. MarkRevoked):
+// return an error instead and act after RefreshLocked returns.
+//
+// The account must be active and still have tokens, else ErrNotFound.
+func (s *Accounts) RefreshLocked(ctx context.Context, accountID string, fn func(cur StoredAccount) (*TokenUpdate, error)) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("refresh locked: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var cur StoredAccount
+	err = tx.QueryRow(ctx, `
+		SELECT a.id::text, a.tenant_id::text, a.provider::text, a.provider_account_id,
+		       COALESCE(a.email, ''), a.status::text,
+		       t.access_token_enc, t.access_nonce, t.refresh_token_enc, t.refresh_nonce, t.expires_at
+		FROM oauth_tokens t
+		JOIN connected_accounts a ON a.id = t.account_id
+		WHERE t.account_id = $1 AND a.status = 'active'
+		FOR UPDATE OF t`,
+		accountID,
+	).Scan(
+		&cur.ID, &cur.TenantID, &cur.Provider, &cur.ProviderAccountID, &cur.Email, &cur.Status,
+		&cur.AccessEnc, &cur.AccessNonce, &cur.RefreshEnc, &cur.RefreshNonce, &cur.ExpiresAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("refresh locked: select: %w", err)
+	}
+	cur.ExpiresAt = cur.ExpiresAt.UTC()
+	cur.HasTokens = true
+
+	update, err := fn(cur)
+	if err != nil {
+		return err
+	}
+	if update != nil {
+		if err := updateTokens(ctx, tx, accountID, *update); err != nil {
+			return fmt.Errorf("refresh locked: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("refresh locked: commit: %w", err)
 	}
 	return nil
 }
@@ -164,13 +234,15 @@ func (s *Accounts) SaveConnection(ctx context.Context, c Connection) (accountID 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	err = tx.QueryRow(ctx, `
-		INSERT INTO connected_accounts (tenant_id, provider, provider_account_id)
-		VALUES ($1, $2, $3)
+		INSERT INTO connected_accounts (tenant_id, provider, provider_account_id, email)
+		VALUES ($1, $2, $3, NULLIF($4, ''))
 		ON CONFLICT (provider, provider_account_id) DO UPDATE
-			SET status = 'active', updated_at = now()
+			SET status = 'active',
+			    email = COALESCE(EXCLUDED.email, connected_accounts.email),
+			    updated_at = now()
 			WHERE connected_accounts.tenant_id = EXCLUDED.tenant_id
 		RETURNING id::text`,
-		c.TenantID, c.Provider, c.ProviderAccountID,
+		c.TenantID, c.Provider, c.ProviderAccountID, c.Email,
 	).Scan(&accountID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrAccountTaken
