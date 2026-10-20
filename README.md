@@ -36,18 +36,68 @@ Notes:
 - Google credentials: follow [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
 - Expired `oauth_states` rows are purged by a janitor inside the API (on startup and every 10 minutes).
 
+## Build and run locally
+
+```bash
+make build                 # bin/relay and bin/relayctl (bin/ is gitignored)
+./bin/relay                # reads .env; same as: go run ./cmd/api
+```
+
+| Make target | What it does |
+| --- | --- |
+| `make build` | Compile `bin/relay` (API) and `bin/relayctl` (admin CLI) |
+| `make migrate-up` / `make migrate-down` | Apply all migrations / roll back the last one |
+| `make tenant NAME="Acme"` | Create a tenant and print its API key once |
+
 ## Running the tests
 
 ```bash
-# Unit tests (no DB): always safe
-go test ./internal/apikey ./internal/vault ./internal/janitor ./internal/testutil/...
+# Unit tests only: integration tests skip themselves without TEST_DATABASE_URL
+go test -race ./...
 
-# Full suite including integration (Postgres on :5435)
+# Full suite: unit + integration + end-to-end (Postgres on :5435)
 TEST_DATABASE_URL='postgres://relay:relay@localhost:5435/relay?sslmode=disable' \
   go test -race -count=1 ./...
+
+# Only the end-to-end flow (connect → callback → events)
+TEST_DATABASE_URL='postgres://relay:relay@localhost:5435/relay?sslmode=disable' \
+  go test -race -count=1 ./test/e2e
 ```
 
-Integration tests use a **stateful fake Google** (`internal/testutil/fakegoogle`): it checks PKCE, one-time codes, refresh/access validity and calendar Bearer tokens. The end-to-end flow suite is `go test -run Flow ./test/e2e` (black-box: real router, services and Postgres, fake Google).
+| Kind | Where | Needs Postgres |
+| --- | --- | --- |
+| Unit | `*_test.go` next to the code they test | No |
+| Integration | `*_integration_test.go` (store, httpapi) | Yes |
+| End-to-end | `test/e2e`, black-box through HTTP using exported APIs only | Yes |
+
+Integration and e2e tests use a **stateful fake Google** (`internal/testutil/fakegoogle`): it checks PKCE, one-time codes, refresh/access validity and calendar Bearer tokens.
+
+## Project layout
+
+Packages are organized by responsibility, not by layer ([ADR 0004](docs/adr/0004-project-layout.md)). Everything under `internal/` can only be imported by this module.
+
+```
+cmd/
+  api/                      API entry point; the only place that reads config and wires packages
+  relayctl/                 admin CLI (create tenants)
+internal/
+  config/                   env loading and validation (fail fast)
+  httpapi/                  router and handlers: me, connect, callback, calendars
+    middleware/             request id, access log, panic recovery, API key auth
+  oauth/                    connect flow (Start/Finish) and token lifecycle (decrypt, refresh, revoke)
+  calendar/                 events service + provider sources (Google)
+  store/                    Postgres access, SQL only
+  apikey/                   API key generation, checksum and hashing
+  vault/                    AES-256-GCM encryption with AAD for tokens at rest
+  janitor/                  background purge of expired oauth_states
+  testutil/fakegoogle/      stateful fake Google for tests
+test/e2e/                   end-to-end flow suite
+migrations/                 SQL migrations (golang-migrate)
+docs/                       design, ADRs, Google Cloud setup, secret scanning
+bin/                        build output (gitignored)
+```
+
+Dependencies point one way: `httpapi → calendar → oauth → store`. `vault`, `apikey` and `store` import nothing internal. Interfaces are declared by the package that uses them (e.g. `middleware.TenantLookup`, `oauth.StateStore`), so each package can be tested with small fakes.
 
 ## Create a tenant and test your API key
 
@@ -62,7 +112,8 @@ A **tenant** is a Relay customer. Each tenant calls the API with an **API key** 
    Details go to stderr and the key alone goes to stdout, so you can save it straight to a file:
 
    ```bash
-   go run ./cmd/relayctl tenant create --name "Acme" > acme.key
+   make tenant NAME="Acme" > acme.key
+   # or, after make build: ./bin/relayctl tenant create --name "Acme" > acme.key
    ```
 
 2. Call the API with the key in the `Authorization` header:
