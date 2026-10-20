@@ -90,4 +90,28 @@ curl -H "Authorization: Bearer $(cat acme.key)" -H "Accept: application/json" \
 | Unknown or not yet enabled provider | `400 {"error":"unsupported_provider"}` |
 | Database failure | `500 {"error":"internal error"}` |
 
-Relay stores a one-time `state` and the PKCE `code_verifier` in `oauth_states` for 10 minutes; only the `code_challenge` (SHA-256 of the verifier) travels in the URL. Scope is `calendar.readonly` with `access_type=offline` and `prompt=consent` so Google returns a refresh token. The callback (`/v1/oauth/google/callback`) is the next step.
+Relay stores a one-time `state` and the PKCE `code_verifier` in `oauth_states` for 10 minutes; only the `code_challenge` (SHA-256 of the verifier) travels in the URL. Scopes are `openid` + `calendar.readonly`, with `access_type=offline` and `prompt=consent` so Google returns a refresh token and an `id_token`.
+
+### Callback (after Google consent)
+
+`GET /v1/oauth/{provider}/callback` is **public** (the browser has no API key). Security is the one-time `state`. On success:
+
+```json
+{"status":"connected","provider":"google","account_id":"…"}
+```
+
+Tokens are encrypted (AES-256-GCM) and never returned in the body. Reloading the same callback URL returns `400 {"error":"invalid_state"}`.
+
+| Case | Status | `error` |
+| --- | --- | --- |
+| Connected | `200` | — |
+| Missing `state` / `code` | `400` | `invalid_request` |
+| Unknown provider | `400` | `unsupported_provider` |
+| Bad / reused / expired state | `400` | `invalid_state` |
+| User denied consent | `400` | `access_denied` |
+| Google rejected the code | `400` | `exchange_failed` |
+| Calendar scope unchecked | `400` | `insufficient_scope` |
+| Bad `id_token` | `502` | `provider_error` |
+| Google down / timeout | `502` | `provider_unavailable` |
+| Account owned by another tenant | `409` | `account_already_connected` |
+| DB / vault failure | `500` | `internal error` |

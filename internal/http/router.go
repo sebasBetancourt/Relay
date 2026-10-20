@@ -14,11 +14,12 @@ import (
 // A struct instead of positional parameters keeps NewRouter stable as
 // features are added, and lets tests set only what they use.
 type Deps struct {
-	Log     *slog.Logger
-	DB      *pgxpool.Pool
-	Tenants TenantLookup
-	Env     apikey.Env
-	Connect Connector
+	Log      *slog.Logger
+	DB       *pgxpool.Pool
+	Tenants  TenantLookup
+	Env      apikey.Env
+	Connect  Connector
+	Callback Callbacker
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -42,6 +43,10 @@ func NewRouter(d Deps) http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
 	})
+
+	// Public OAuth callback: the browser returns from Google without an API
+	// key. Go 1.22+ picks this more-specific pattern over the /v1/ catch-all.
+	mux.HandleFunc("GET /v1/oauth/{provider}/callback", handleCallback(log, d.Callback))
 
 	// Private: everything under /v1/ requires an API key. Auth runs before
 	// routing, so unknown /v1 paths also answer 401 without a key and do

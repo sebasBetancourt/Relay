@@ -103,8 +103,10 @@ sequenceDiagram
 
    | Provider | Scopes |
    | --- | --- |
-   | Google | `calendar.readonly` |
+   | Google | `openid` (id_token → `sub` as `provider_account_id`), `calendar.readonly` |
    | Microsoft | `Calendars.Read`, `offline_access` (required for refresh token), `User.Read` |
+
+   **Implemented:** connect start (`GET /v1/connect/{provider}`) and Google callback (`GET /v1/oauth/{provider}/callback`) — steps 3–5: consume state, exchange code + PKCE, encrypt with AAD `("oauth_tokens", tenantID, provider, providerAccountID, column)`, upsert `connected_accounts` + `oauth_tokens`.
 
    Do **not** request write scopes “just in case”. Mail and other tools are out of scope for v0.1.
 

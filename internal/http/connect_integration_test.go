@@ -7,8 +7,7 @@ import (
 	"net/url"
 	"os"
 	"testing"
-
-	"golang.org/x/oauth2"
+	"time"
 
 	"github.com/sebasBetancourt/relay/internal/apikey"
 	"github.com/sebasBetancourt/relay/internal/connect"
@@ -41,14 +40,20 @@ func TestConnectGoogleWithRealDB(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM tenants WHERE id = $1", tenant.ID)
 	})
 
+	svc := connect.NewService(connect.Deps{
+		States: store.NewOAuthStates(pool),
+		Providers: map[connect.Provider]connect.ProviderSpec{
+			connect.ProviderGoogle: connect.GoogleSpec("client-123", "secret-xyz", "http://localhost:8080/v1/oauth/google/callback"),
+		},
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+	})
 	router := NewRouter(Deps{
-		Log:     discardLogger(),
-		DB:      pool,
-		Tenants: tenants,
-		Env:     apikey.EnvTest,
-		Connect: connect.NewService(store.NewOAuthStates(pool), map[connect.Provider]*oauth2.Config{
-			connect.ProviderGoogle: connect.GoogleConfig("client-123", "secret-xyz", "http://localhost:8080/v1/oauth/google/callback"),
-		}),
+		Log:      discardLogger(),
+		DB:       pool,
+		Tenants:  tenants,
+		Env:      apikey.EnvTest,
+		Connect:  svc,
+		Callback: svc,
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/connect/google", nil)

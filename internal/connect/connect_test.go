@@ -5,19 +5,20 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"net/http"
 	"net/url"
 	"testing"
 	"time"
-
-	"golang.org/x/oauth2"
 
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
 type fakeStates struct {
-	saved []store.OAuthState
-	ttls  []time.Duration
-	err   error
+	saved   []store.OAuthState
+	ttls    []time.Duration
+	err     error
+	consume map[string]store.ConsumedState
+	consErr error
 }
 
 func (f *fakeStates) Create(_ context.Context, st store.OAuthState, ttl time.Duration) error {
@@ -29,11 +30,37 @@ func (f *fakeStates) Create(_ context.Context, st store.OAuthState, ttl time.Dur
 	return nil
 }
 
+func (f *fakeStates) Consume(_ context.Context, state, provider string) (store.ConsumedState, error) {
+	if f.consErr != nil {
+		return store.ConsumedState{}, f.consErr
+	}
+	key := provider + ":" + state
+	if f.consume != nil {
+		if c, ok := f.consume[key]; ok {
+			delete(f.consume, key)
+			return c, nil
+		}
+	}
+	// Default: match last Create for this state+provider.
+	for i := len(f.saved) - 1; i >= 0; i-- {
+		st := f.saved[i]
+		if st.State == state && st.Provider == provider {
+			f.saved = append(f.saved[:i], f.saved[i+1:]...)
+			return store.ConsumedState{TenantID: st.TenantID, CodeVerifier: st.CodeVerifier}, nil
+		}
+	}
+	return store.ConsumedState{}, store.ErrNotFound
+}
+
 const redirect = "http://localhost:8080/v1/oauth/google/callback"
 
 func newTestService(states StateStore) *Service {
-	return NewService(states, map[Provider]*oauth2.Config{
-		ProviderGoogle: GoogleConfig("client-123", "secret-xyz", redirect),
+	return NewService(Deps{
+		States: states,
+		Providers: map[Provider]ProviderSpec{
+			ProviderGoogle: GoogleSpec("client-123", "secret-xyz", redirect),
+		},
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 }
 
@@ -55,7 +82,7 @@ func TestStartGoogle(t *testing.T) {
 	if states.ttls[0] != 10*time.Minute {
 		t.Fatalf("ttl = %v, want 10m", states.ttls[0])
 	}
-	if len(saved.State) != 43 { // 32 bytes base64url, no padding
+	if len(saved.State) != 43 {
 		t.Fatalf("state length = %d, want 43", len(saved.State))
 	}
 
@@ -67,7 +94,6 @@ func TestStartGoogle(t *testing.T) {
 		t.Fatalf("auth URL host = %s://%s", u.Scheme, u.Host)
 	}
 
-	// PKCE by hand: challenge = base64url(SHA-256(verifier)), no padding.
 	sum := sha256.Sum256([]byte(saved.CodeVerifier))
 	wantChallenge := base64.RawURLEncoding.EncodeToString(sum[:])
 
@@ -76,7 +102,6 @@ func TestStartGoogle(t *testing.T) {
 		"state":                 saved.State,
 		"code_challenge":        wantChallenge,
 		"code_challenge_method": "S256",
-		"scope":                 GoogleCalendarReadonly,
 		"access_type":           "offline",
 		"prompt":                "consent",
 		"response_type":         "code",
@@ -88,12 +113,38 @@ func TestStartGoogle(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got, v)
 		}
 	}
-	// Secrets that must never travel in the browser URL.
+	scope := q.Get("scope")
+	if !containsScope(scope, GoogleOpenID) || !containsScope(scope, GoogleCalendarReadonly) {
+		t.Errorf("scope = %q, want openid + calendar.readonly", scope)
+	}
 	for _, k := range []string{"client_secret", "code_verifier"} {
 		if q.Has(k) {
 			t.Errorf("auth URL leaks %s", k)
 		}
 	}
+}
+
+func containsScope(spaceSeparated, want string) bool {
+	for _, s := range splitScopes(spaceSeparated) {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func splitScopes(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i == len(s) || s[i] == ' ' {
+			if i > start {
+				out = append(out, s[start:i])
+			}
+			start = i + 1
+		}
+	}
+	return out
 }
 
 func TestStartGeneratesFreshValues(t *testing.T) {

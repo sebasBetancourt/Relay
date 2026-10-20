@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/oauth2"
-
 	"github.com/sebasBetancourt/relay/internal/apikey"
 	"github.com/sebasBetancourt/relay/internal/connect"
 	"github.com/sebasBetancourt/relay/internal/store"
@@ -33,6 +31,10 @@ func (f *fakeStates) Create(_ context.Context, st store.OAuthState, _ time.Durat
 	return nil
 }
 
+func (f *fakeStates) Consume(_ context.Context, state, provider string) (store.ConsumedState, error) {
+	return store.ConsumedState{}, store.ErrNotFound
+}
+
 type connectFixture struct {
 	router http.Handler
 	states *fakeStates
@@ -47,14 +49,19 @@ func newConnectFixture(t *testing.T, storeErr error) connectFixture {
 	key := apikey.Generate(apikey.EnvTest)
 	tenant := store.Tenant{ID: "tenant-42", Name: "Acme", KeyPrefix: key.KeyPrefix}
 	states := &fakeStates{err: storeErr}
-	svc := connect.NewService(states, map[connect.Provider]*oauth2.Config{
-		connect.ProviderGoogle: connect.GoogleConfig("client-123", "secret-xyz", "http://localhost:8080/v1/oauth/google/callback"),
+	svc := connect.NewService(connect.Deps{
+		States: states,
+		Providers: map[connect.Provider]connect.ProviderSpec{
+			connect.ProviderGoogle: connect.GoogleSpec("client-123", "secret-xyz", "http://localhost:8080/v1/oauth/google/callback"),
+		},
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 	router := NewRouter(Deps{
-		Log:     discardLogger(),
-		Tenants: &fakeLookup{tenants: map[string]store.Tenant{key.Hash: tenant}},
-		Env:     apikey.EnvTest,
-		Connect: svc,
+		Log:      discardLogger(),
+		Tenants:  &fakeLookup{tenants: map[string]store.Tenant{key.Hash: tenant}},
+		Env:      apikey.EnvTest,
+		Connect:  svc,
+		Callback: svc,
 	})
 	return connectFixture{router: router, states: states, key: key, tenant: tenant}
 }

@@ -25,7 +25,7 @@ Without this, token exchange works but every Calendar call fails with `403 acces
 | User type | **External** | Lets any Google account (not only a Workspace org) connect. |
 | Publishing status | **Testing** | No Google review needed while developing. |
 | Test users | Your own Google account | In Testing mode only listed users can grant consent. |
-| Scopes | `https://www.googleapis.com/auth/calendar.readonly` | Ask for the minimum. v0.1 only reads events (see [design.md](design.md)). |
+| Scopes | `openid` and `https://www.googleapis.com/auth/calendar.readonly` | `openid` gives an `id_token` with `sub` (stable account id). `calendar.readonly` is the only calendar permission v0.1 needs. No extra Google verification for `openid`. |
 
 Testing mode limits: at most 100 test users, and refresh tokens expire after 7 days. Both go away after Google verification (see [Production](#production)).
 

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"golang.org/x/oauth2"
 
 	"github.com/sebasBetancourt/relay/internal/config"
 	"github.com/sebasBetancourt/relay/internal/connect"
@@ -30,14 +29,11 @@ func main() {
 	}
 	log := config.NewLogger(cfg.LogLevel)
 
-	// Built now so a bad ENCRYPTION_KEY stops startup; the OAuth callback
-	// will use it to encrypt tokens.
 	vlt, err := vault.New(cfg.EncryptionKey)
 	if err != nil {
 		log.Error("vault init failed", "err", err)
 		os.Exit(1)
 	}
-	_ = vlt // used by the OAuth callback (next step)
 
 	pool, err := store.NewPool(context.Background(), cfg.DatabaseURL)
 	if err != nil {
@@ -46,16 +42,24 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Composition root: the only place that reads config and wires packages.
-	providers := map[connect.Provider]*oauth2.Config{
-		connect.ProviderGoogle: connect.GoogleConfig(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL),
-	}
+	oauthHTTP := &http.Client{Timeout: 10 * time.Second}
+	connectSvc := connect.NewService(connect.Deps{
+		States:   store.NewOAuthStates(pool),
+		Accounts: store.NewAccounts(pool),
+		Vault:    vlt,
+		Providers: map[connect.Provider]connect.ProviderSpec{
+			connect.ProviderGoogle: connect.GoogleSpec(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL),
+		},
+		HTTPClient: oauthHTTP,
+	})
+
 	deps := relayhttp.Deps{
-		Log:     log,
-		DB:      pool,
-		Tenants: store.NewTenants(pool),
-		Env:     cfg.Env,
-		Connect: connect.NewService(store.NewOAuthStates(pool), providers),
+		Log:      log,
+		DB:       pool,
+		Tenants:  store.NewTenants(pool),
+		Env:      cfg.Env,
+		Connect:  connectSvc,
+		Callback: connectSvc,
 	}
 
 	srv := &http.Server{
