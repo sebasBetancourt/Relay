@@ -20,7 +20,7 @@ We use `net/http` instead of a framework (Gin, Echo, Chi, etc.) because:
 Requirements: Docker, [golang-migrate](https://github.com/golang-migrate/migrate) CLI, and (optionally) Go 1.25+ to run the API outside Docker.
 
 ```bash
-cp .env.example .env                 # then fill in the Google vars and ENCRYPTION_KEY
+cp .env.example .env                 # then fill in ENCRYPTION_KEY and at least one provider
 docker compose up -d --build
 make migrate-up
 curl http://localhost:8080/healthz   # ok
@@ -33,7 +33,10 @@ Notes:
 - Inside Compose, the API talks to Postgres as `postgres:5432`.
 - If host port **8080** is already in use, stop the other process or change the API port mapping in `docker-compose.yml`.
 - The API fails fast on startup and lists every missing or invalid variable at once. `RELAY_ENV` (`live` or `test`) is required.
-- Google credentials: follow [docs/google-cloud-setup.md](docs/google-cloud-setup.md).
+- Providers are optional; configure at least one:
+  - Google: [docs/google-cloud-setup.md](docs/google-cloud-setup.md)
+  - Microsoft (Outlook): [docs/microsoft-setup.md](docs/microsoft-setup.md)
+- The startup log lists the enabled providers (`"providers":["google","microsoft"]`).
 - Expired `oauth_states` rows are purged by a janitor inside the API (on startup and every 10 minutes).
 
 ## Build and run locally

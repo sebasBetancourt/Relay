@@ -23,9 +23,15 @@ services:
       LOG_LEVEL: info
       RELAY_ENV: ${RELAY_ENV:?set RELAY_ENV in .env (live or test)}
       # Read from .env; compose refuses to start if any is missing.
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID in .env}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?set GOOGLE_CLIENT_SECRET in .env}
-      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:?set GOOGLE_REDIRECT_URL in .env}
+      # Providers are optional (configure at least one); the API validates them at startup.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_REDIRECT_URL: ${MICROSOFT_REDIRECT_URL:-}
+      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-common}
+      MICROSOFT_EXPIRATION_DATE: ${MICROSOFT_EXPIRATION_DATE:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
     ports:
       - "8080:8080"

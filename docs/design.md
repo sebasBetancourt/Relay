@@ -11,7 +11,7 @@
 #### Scope v0.1
 - Management minim of users, tenats with API key
 - OAuth 2.0 authorization code flow + PKCE with Google and Microsoft
-- Library of Microsft Integrate MSAL
+- Microsoft through `golang.org/x/oauth2` (Entra ID endpoints), not MSAL, so both providers share one token lifecycle ([ADR 0005](adr/0005-oauth2-for-microsoft.md))
 - Google, directlly OAuth 2.0 with library of Golang golang.org/x/oauth2
 - Minimun Scopes incrementals, client secret and .envs
 - Vault of tokens, cifrate and correct refresh - Microsoft save the refresh token every time

@@ -31,6 +31,9 @@ func main() {
 		os.Exit(1)
 	}
 	log := config.NewLogger(cfg.LogLevel)
+	for _, w := range cfg.Warnings(time.Now()) {
+		log.Warn("config warning", "detail", w)
+	}
 
 	vlt, err := vault.New(cfg.EncryptionKey)
 	if err != nil {
@@ -45,20 +48,26 @@ func main() {
 	}
 
 	apiHTTP := &http.Client{Timeout: 10 * time.Second}
+
+	// Only configured providers are wired; the others answer 400
+	// unsupported_provider. Microsoft is wired with GET /v1/connect/microsoft.
+	providers := map[oauth.Provider]oauth.ProviderSpec{}
+	sources := map[oauth.Provider]calendar.Source{}
+	if g := cfg.Google; g != nil {
+		providers[oauth.ProviderGoogle] = oauth.GoogleSpec(g.ClientID, g.ClientSecret, g.RedirectURL)
+		sources[oauth.ProviderGoogle] = calendar.NewGoogleSource(apiHTTP)
+	}
+
 	oauthStates := store.NewOAuthStates(pool)
 	oauthSvc := oauth.NewService(oauth.Deps{
-		States:   oauthStates,
-		Accounts: store.NewAccounts(pool),
-		Vault:    vlt,
-		Providers: map[oauth.Provider]oauth.ProviderSpec{
-			oauth.ProviderGoogle: oauth.GoogleSpec(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL),
-		},
+		States:     oauthStates,
+		Accounts:   store.NewAccounts(pool),
+		Vault:      vlt,
+		Providers:  providers,
 		HTTPClient: apiHTTP,
 		Log:        log,
 	})
-	calendarSvc := calendar.NewService(oauthSvc, map[oauth.Provider]calendar.Source{
-		oauth.ProviderGoogle: calendar.NewGoogleSource(apiHTTP),
-	})
+	calendarSvc := calendar.NewService(oauthSvc, sources)
 
 	deps := httpapi.Deps{
 		Log:      log,
@@ -94,7 +103,7 @@ func main() {
 	}()
 
 	go func() {
-		log.Info("starting relay api", "port", cfg.Port, "env", cfg.Env)
+		log.Info("starting relay api", "port", cfg.Port, "env", cfg.Env, "providers", cfg.Providers())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server error", "err", err)
 			os.Exit(1)
