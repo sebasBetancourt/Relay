@@ -81,7 +81,7 @@ Dependencies point one way: `httpapi → calendar → oauth → store`. `vault`,
 Releases are cut by pushing a tag; `.github/workflows/release.yml` does the rest.
 
 1. Move the `[Unreleased]` entries of `CHANGELOG.md` under a new `## [X.Y.Z] - YYYY-MM-DD` section. The release notes are taken from that section, and the workflow fails without it.
-2. Check that CI is green on `main`.
+2. Check that CI is green on `master`.
 3. Tag and push:
 
    ```bash
