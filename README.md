@@ -73,7 +73,16 @@ TEST_DATABASE_URL='postgres://relay:relay@localhost:5435/relay?sslmode=disable' 
 | Integration | `*_integration_test.go` (store, httpapi) | Yes |
 | End-to-end | `test/e2e`, black-box through HTTP using exported APIs only | Yes |
 
-Integration and e2e tests use a **stateful fake Google** (`internal/testutil/fakegoogle`): it checks PKCE, one-time codes, refresh/access validity and calendar Bearer tokens.
+Integration and e2e tests run against **stateful fake providers**, so CI needs no internet and no real accounts:
+
+- `internal/testutil/fakeoauth`: the shared OAuth core. It handles one-time codes bound to PKCE challenges, refresh and access validity, revocation, simulated failures and latency.
+- `fakegoogle`: Google OAuth, the `id_token`, token revocation and the Calendar events API.
+- `fakemicrosoft`: Entra ID and Graph `/me` and `calendarView`. It is stricter than Microsoft on purpose:
+  - every refresh rotates the refresh token and kills the old one;
+  - the client secret must travel in the body;
+  - `@odata.nextLink` points at the real Graph host, so following it instead of keeping `$skiptoken` fails.
+
+`test/e2e` runs every scenario (happy path, invalid state, expired-token refresh, revoked refresh) for both Google and Microsoft. It also covers Microsoft-only cases (refresh rotation, two API replicas refreshing at once, paging, `interaction_required`, no mailbox) and the accounts lifecycle.
 
 ## Project layout
 

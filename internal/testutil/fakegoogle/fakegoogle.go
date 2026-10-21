@@ -1,17 +1,14 @@
-// Package fakegoogle is a stateful Google stand-in for tests.
-// It remembers codes, PKCE challenges, refresh/access tokens and events,
-// so a wrong verifier or a foreign refresh fails the way real Google would.
+// Package fakegoogle is a stateful Google stand-in for tests: OAuth (with
+// PKCE, one-time codes, refresh/access validity and revocation, from
+// fakeoauth) plus the Calendar API events endpoint.
 //
-// It does not import connect or calendar (avoids import cycles). Callers wire
-// its URLs into oauth2.Config / GoogleSource themselves.
+// It does not import Relay's oauth or calendar packages (avoids import
+// cycles). Callers wire its URLs into oauth2.Config / GoogleSource.
 package fakegoogle
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,12 +18,14 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sebasBetancourt/relay/internal/testutil/fakeoauth"
 )
 
 const (
 	ScopeOpenID           = "openid"
+	ScopeEmail            = "email"
 	ScopeCalendarReadonly = "https://www.googleapis.com/auth/calendar.readonly"
-	defaultAccessTTL      = time.Hour
 )
 
 // Options configures the fake Google.
@@ -35,6 +34,7 @@ type Options struct {
 	ClientSecret string
 	RedirectURL  string
 	Sub          string        // id_token sub / provider_account_id
+	Email        string        // optional verified email in the id_token
 	AccessTTL    time.Duration // default 1h
 }
 
@@ -52,51 +52,19 @@ type Event struct {
 }
 
 // RequestRecord is the last observed token/calendar request (for asserts).
-type RequestRecord struct {
-	Path  string
-	Form  url.Values
-	Query url.Values
-}
+type RequestRecord = fakeoauth.RequestRecord
 
-// Calls are atomic counters of successful-path hits (and attempts).
-type Calls struct {
-	Exchange int64
-	Refresh  int64
-	Events   int64
-}
+// Calls are counters of token-endpoint successes and events attempts.
+type Calls = fakeoauth.Calls
 
 // Server is a fake Google OAuth + Calendar API.
 type Server struct {
-	t         *testing.T
-	opts      Options
-	srv       *httptest.Server
-	mu        sync.Mutex
-	codes     map[string]*authCode // code → pending
-	refresh   map[string]*refreshTok
-	access    map[string]*accessTok
-	events    []Event
-	failNext  map[string]int // path suffix → status
-	last      RequestRecord
-	exchangeN atomic.Int64
-	refreshN  atomic.Int64
-	eventsN   atomic.Int64
-}
-
-type authCode struct {
-	challenge   string
-	redirectURI string
-	state       string
-	used        bool
-}
-
-type refreshTok struct {
-	revoked bool
-}
-
-type accessTok struct {
-	refresh string
-	expiry  time.Time
-	revoked bool
+	*fakeoauth.Core
+	opts    Options
+	srv     *httptest.Server
+	mu      sync.Mutex
+	events  []Event
+	revokes atomic.Int64
 }
 
 // New starts the fake server. Closed via t.Cleanup.
@@ -114,20 +82,36 @@ func New(t *testing.T, opts Options) *Server {
 	if opts.Sub == "" {
 		opts.Sub = "sub-fake-google"
 	}
-	if opts.AccessTTL <= 0 {
-		opts.AccessTTL = defaultAccessTTL
-	}
-	g := &Server{
-		t:        t,
-		opts:     opts,
-		codes:    make(map[string]*authCode),
-		refresh:  make(map[string]*refreshTok),
-		access:   make(map[string]*accessTok),
-		failNext: make(map[string]int),
-	}
+	g := &Server{opts: opts}
+	g.Core = fakeoauth.New(t, fakeoauth.Config{
+		Name:         "fakegoogle",
+		ClientID:     opts.ClientID,
+		ClientSecret: opts.ClientSecret,
+		RedirectURL:  opts.RedirectURL,
+		AccessTTL:    opts.AccessTTL,
+		ValidateAuthURL: func(t *testing.T, q url.Values) {
+			if q.Get("access_type") != "offline" {
+				t.Errorf("fakegoogle Consent: access_type = %q, want offline", q.Get("access_type"))
+			}
+			scope := q.Get("scope")
+			if !strings.Contains(scope, ScopeOpenID) || !strings.Contains(scope, ScopeCalendarReadonly) {
+				t.Errorf("fakegoogle Consent: scope = %q", scope)
+			}
+		},
+		TokenExtras: func(exp time.Time) map[string]any {
+			return map[string]any{
+				"scope":    ScopeOpenID + " " + ScopeEmail + " " + ScopeCalendarReadonly,
+				"id_token": g.idToken(exp),
+			}
+		},
+	})
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/o/oauth2/auth", g.handleAuthPage)
-	mux.HandleFunc("/token", g.handleToken)
+	mux.HandleFunc("/o/oauth2/auth", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "use Consent/Deny helpers", http.StatusNotImplemented)
+	})
+	mux.HandleFunc("/token", g.HandleToken)
+	mux.HandleFunc("/revoke", g.handleRevoke)
 	mux.HandleFunc("/calendars/primary/events", g.handleEvents)
 	g.srv = httptest.NewServer(mux)
 	t.Cleanup(g.srv.Close)
@@ -136,23 +120,16 @@ func New(t *testing.T, opts Options) *Server {
 
 func (g *Server) TokenURL() string     { return g.srv.URL + "/token" }
 func (g *Server) AuthURL() string      { return g.srv.URL + "/o/oauth2/auth" }
+func (g *Server) RevokeURL() string    { return g.srv.URL + "/revoke" }
 func (g *Server) APIBaseURL() string   { return g.srv.URL }
 func (g *Server) Client() *http.Client { return g.srv.Client() }
 func (g *Server) Sub() string          { return g.opts.Sub }
 
-func (g *Server) Calls() Calls {
-	return Calls{
-		Exchange: g.exchangeN.Load(),
-		Refresh:  g.refreshN.Load(),
-		Events:   g.eventsN.Load(),
-	}
-}
+// AccountID is the provider_account_id Relay stores (the id_token sub).
+func (g *Server) AccountID() string { return g.opts.Sub }
 
-func (g *Server) LastRequest() RequestRecord {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.last
-}
+// Revokes counts successful calls to the revocation endpoint.
+func (g *Server) Revokes() int64 { return g.revokes.Load() }
 
 // SetEvents replaces the calendar feed.
 func (g *Server) SetEvents(evs ...Event) {
@@ -161,262 +138,44 @@ func (g *Server) SetEvents(evs ...Event) {
 	g.events = append([]Event(nil), evs...)
 }
 
-// ExpireAccessTokens marks every issued access token as expired.
-func (g *Server) ExpireAccessTokens() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	past := time.Now().Add(-time.Minute)
-	for _, a := range g.access {
-		a.expiry = past
-	}
-}
-
-// RevokeAccess revokes all access tokens (refresh still valid).
-func (g *Server) RevokeAccess() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for _, a := range g.access {
-		a.revoked = true
-	}
-}
-
-// RevokeAll simulates the user removing app access.
-func (g *Server) RevokeAll() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for _, r := range g.refresh {
-		r.revoked = true
-	}
-	for _, a := range g.access {
-		a.revoked = true
-	}
-}
-
-// FailNext makes the next hit on endpoint return status (once).
-// endpoint is "token" or "events".
-func (g *Server) FailNext(endpoint string, status int) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.failNext[endpoint] = status
-}
-
-// Consent simulates the user accepting: validates the auth URL and returns
-// redirect_uri?code=…&state=….
-func (g *Server) Consent(authURL string) string {
-	g.t.Helper()
-	u, err := url.Parse(authURL)
-	if err != nil {
-		g.t.Errorf("fakegoogle Consent: bad auth URL: %v", err)
-		return ""
-	}
-	q := u.Query()
-	if q.Get("client_id") != g.opts.ClientID {
-		g.t.Errorf("fakegoogle Consent: client_id = %q", q.Get("client_id"))
-	}
-	if q.Get("redirect_uri") != g.opts.RedirectURL {
-		g.t.Errorf("fakegoogle Consent: redirect_uri = %q want %q", q.Get("redirect_uri"), g.opts.RedirectURL)
-	}
-	if q.Get("response_type") != "code" {
-		g.t.Errorf("fakegoogle Consent: response_type = %q", q.Get("response_type"))
-	}
-	if q.Get("code_challenge_method") != "S256" {
-		g.t.Errorf("fakegoogle Consent: code_challenge_method = %q", q.Get("code_challenge_method"))
-	}
-	if q.Get("access_type") != "offline" {
-		g.t.Errorf("fakegoogle Consent: access_type = %q", q.Get("access_type"))
-	}
-	scope := q.Get("scope")
-	if !strings.Contains(scope, ScopeOpenID) || !strings.Contains(scope, ScopeCalendarReadonly) {
-		g.t.Errorf("fakegoogle Consent: scope = %q", scope)
-	}
-	challenge := q.Get("code_challenge")
-	state := q.Get("state")
-	if challenge == "" || state == "" {
-		g.t.Errorf("fakegoogle Consent: missing challenge or state")
-		return ""
-	}
-	code := randomToken("code")
-	g.mu.Lock()
-	g.codes[code] = &authCode{
-		challenge:   challenge,
-		redirectURI: q.Get("redirect_uri"),
-		state:       state,
-	}
-	g.mu.Unlock()
-
-	cb, _ := url.Parse(g.opts.RedirectURL)
-	cq := cb.Query()
-	cq.Set("code", code)
-	cq.Set("state", state)
-	cb.RawQuery = cq.Encode()
-	return cb.String()
-}
-
-// Deny simulates the user rejecting consent.
-func (g *Server) Deny(authURL string) string {
-	g.t.Helper()
-	u, err := url.Parse(authURL)
-	if err != nil {
-		g.t.Errorf("fakegoogle Deny: bad auth URL: %v", err)
-		return ""
-	}
-	state := u.Query().Get("state")
-	cb, _ := url.Parse(g.opts.RedirectURL)
-	cq := cb.Query()
-	cq.Set("error", "access_denied")
-	if state != "" {
-		cq.Set("state", state)
-	}
-	cb.RawQuery = cq.Encode()
-	return cb.String()
-}
-
-func (g *Server) handleAuthPage(w http.ResponseWriter, r *http.Request) {
-	// Tests use Consent/Deny; hitting auth in-browser is unsupported.
-	http.Error(w, "use Consent/Deny helpers", http.StatusNotImplemented)
-}
-
-func (g *Server) handleToken(w http.ResponseWriter, r *http.Request) {
+// handleRevoke is RFC 7009 as Google implements it: unknown tokens get
+// 400 invalid_token.
+func (g *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method", http.StatusMethodNotAllowed)
 		return
 	}
-	if g.takeFail("token", w) {
+	_ = r.ParseForm()
+	if !g.RevokeToken(r.PostForm.Get("token")) {
+		fakeoauth.WriteOAuthError(w, "invalid_token")
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
-	form, _ := url.ParseQuery(string(body))
-	g.mu.Lock()
-	g.last = RequestRecord{Path: r.URL.Path, Form: form}
-	g.mu.Unlock()
-
-	// Client auth: form or Basic.
-	clientID, clientSecret := form.Get("client_id"), form.Get("client_secret")
-	if u, p, ok := r.BasicAuth(); ok {
-		clientID, clientSecret = u, p
-	}
-	if clientID != g.opts.ClientID || clientSecret != g.opts.ClientSecret {
-		writeOAuthError(w, "invalid_client")
-		return
-	}
-
-	switch form.Get("grant_type") {
-	case "authorization_code":
-		g.exchangeCode(w, form)
-	case "refresh_token":
-		g.refreshToken(w, form)
-	default:
-		writeOAuthError(w, "unsupported_grant_type")
-	}
-}
-
-func (g *Server) exchangeCode(w http.ResponseWriter, form url.Values) {
-	if form.Has("state") {
-		writeOAuthError(w, "invalid_request")
-		return
-	}
-	code := form.Get("code")
-	verifier := form.Get("code_verifier")
-	redirect := form.Get("redirect_uri")
-
-	g.mu.Lock()
-	ac, ok := g.codes[code]
-	if !ok || ac.used {
-		g.mu.Unlock()
-		writeOAuthError(w, "invalid_grant")
-		return
-	}
-	if ac.redirectURI != redirect {
-		g.mu.Unlock()
-		writeOAuthError(w, "invalid_grant")
-		return
-	}
-	sum := sha256.Sum256([]byte(verifier))
-	got := base64.RawURLEncoding.EncodeToString(sum[:])
-	if got != ac.challenge {
-		g.mu.Unlock()
-		writeOAuthError(w, "invalid_grant")
-		return
-	}
-	ac.used = true
-	access, refresh, idTok, exp := g.issueTokensLocked()
-	g.mu.Unlock()
-
-	g.exchangeN.Add(1)
-	writeTokenJSON(w, access, refresh, idTok, exp, g.opts.AccessTTL)
-}
-
-func (g *Server) refreshToken(w http.ResponseWriter, form url.Values) {
-	rt := form.Get("refresh_token")
-	g.mu.Lock()
-	rec, ok := g.refresh[rt]
-	if !ok || rec.revoked {
-		g.mu.Unlock()
-		writeOAuthError(w, "invalid_grant")
-		return
-	}
-	access, _, idTok, exp := g.issueTokensLockedWithRefresh(rt)
-	g.mu.Unlock()
-
-	g.refreshN.Add(1)
-	writeTokenJSON(w, access, "", idTok, exp, g.opts.AccessTTL)
-}
-
-func (g *Server) issueTokensLocked() (access, refresh, idTok string, exp time.Time) {
-	refresh = randomToken("rt")
-	g.refresh[refresh] = &refreshTok{}
-	return g.issueTokensLockedWithRefresh(refresh)
-}
-
-func (g *Server) issueTokensLockedWithRefresh(refresh string) (access, _ string, idTok string, exp time.Time) {
-	access = randomToken("at")
-	exp = time.Now().Add(g.opts.AccessTTL)
-	g.access[access] = &accessTok{refresh: refresh, expiry: exp}
-	idTok = makeIDToken(g.opts.ClientID, g.opts.Sub, exp)
-	return access, refresh, idTok, exp
+	g.revokes.Add(1)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (g *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	g.eventsN.Add(1) // count every attempt (including 401), for retry asserts
-	if g.takeFail("events", w) {
+	g.CountEvents() // every attempt, including 401s
+	if g.TakeFail("events", w) {
 		return
 	}
-	g.mu.Lock()
-	g.last = RequestRecord{Path: r.URL.Path, Query: r.URL.Query()}
-	g.mu.Unlock()
-
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
+	g.Record(RequestRecord{Path: r.URL.Path, Query: r.URL.Query(), Header: r.Header.Clone()})
+	if !g.AccessOK(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	token := strings.TrimPrefix(auth, "Bearer ")
-	g.mu.Lock()
-	at, ok := g.access[token]
-	if !ok || at.revoked || !time.Now().Before(at.expiry) {
-		g.mu.Unlock()
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	evs := append([]Event(nil), g.events...)
-	g.mu.Unlock()
 
 	q := r.URL.Query()
 	if q.Get("singleEvents") != "true" || q.Get("orderBy") != "startTime" {
 		http.Error(w, "bad query", http.StatusBadRequest)
 		return
 	}
-	if q.Get("timeMin") == "" || q.Get("timeMax") == "" {
-		http.Error(w, "missing time window", http.StatusBadRequest)
-		return
-	}
 	timeMin, err1 := time.Parse(time.RFC3339, q.Get("timeMin"))
 	timeMax, err2 := time.Parse(time.RFC3339, q.Get("timeMax"))
 	if err1 != nil || err2 != nil {
-		http.Error(w, "bad time", http.StatusBadRequest)
+		http.Error(w, "bad time window", http.StatusBadRequest)
 		return
 	}
-
 	maxResults := 250
 	if raw := q.Get("maxResults"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -426,6 +185,10 @@ func (g *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		maxResults = n
 	}
+
+	g.mu.Lock()
+	evs := append([]Event(nil), g.events...)
+	g.mu.Unlock()
 
 	items := make([]map[string]any, 0)
 	for _, e := range evs {
@@ -450,9 +213,7 @@ func (g *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			item["end"] = end
 		}
 		if e.OrganizerEmail != "" || e.OrganizerName != "" {
-			item["organizer"] = map[string]string{
-				"email": e.OrganizerEmail, "displayName": e.OrganizerName,
-			}
+			item["organizer"] = map[string]string{"email": e.OrganizerEmail, "displayName": e.OrganizerName}
 		}
 		items = append(items, item)
 		if len(items) >= maxResults {
@@ -461,76 +222,33 @@ func (g *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"timeZone": "UTC",
-		"items":    items,
-	})
+	_ = json.NewEncoder(w).Encode(map[string]any{"timeZone": "UTC", "items": items})
 }
 
-func (g *Server) takeFail(endpoint string, w http.ResponseWriter) bool {
-	g.mu.Lock()
-	status, ok := g.failNext[endpoint]
-	if ok {
-		delete(g.failNext, endpoint)
+func (g *Server) idToken(exp time.Time) string {
+	claims := map[string]any{
+		"iss": "https://accounts.google.com",
+		"aud": g.opts.ClientID,
+		"sub": g.opts.Sub,
+		"exp": exp.Unix(),
 	}
-	g.mu.Unlock()
-	if !ok {
-		return false
+	if g.opts.Email != "" {
+		claims["email"] = g.opts.Email
+		claims["email_verified"] = true
 	}
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(`{"error":"fail_next"}`))
-	return true
+	payload, _ := json.Marshal(claims)
+	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`)) + "." +
+		base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
 func eventInWindow(e Event, min, max time.Time) bool {
-	var start time.Time
-	var err error
+	layout := time.RFC3339
 	if e.AllDay {
-		start, err = time.Parse("2006-01-02", e.Start)
-	} else {
-		start, err = time.Parse(time.RFC3339, e.Start)
+		layout = time.DateOnly
 	}
+	start, err := time.Parse(layout, e.Start)
 	if err != nil {
 		return true // keep malformed events visible in tests
 	}
 	return !start.Before(min) && start.Before(max)
-}
-
-func writeOAuthError(w http.ResponseWriter, code string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadRequest)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
-}
-
-func writeTokenJSON(w http.ResponseWriter, access, refresh, idTok string, exp time.Time, ttl time.Duration) {
-	w.Header().Set("Content-Type", "application/json")
-	body := map[string]any{
-		"access_token": access,
-		"token_type":   "Bearer",
-		"expires_in":   int(ttl.Seconds()),
-		"scope":        ScopeOpenID + " " + ScopeCalendarReadonly,
-		"id_token":     idTok,
-	}
-	if refresh != "" {
-		body["refresh_token"] = refresh
-	}
-	_ = exp // expiry encoded via expires_in
-	_ = json.NewEncoder(w).Encode(body)
-}
-
-func makeIDToken(aud, sub string, exp time.Time) string {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
-	payload, _ := json.Marshal(map[string]any{
-		"iss": "https://accounts.google.com",
-		"aud": aud,
-		"sub": sub,
-		"exp": exp.Unix(),
-	})
-	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
-}
-
-func randomToken(prefix string) string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return prefix + "-" + base64.RawURLEncoding.EncodeToString(b)
 }

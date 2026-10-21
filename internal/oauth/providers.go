@@ -100,17 +100,18 @@ func GoogleSpec(clientID, clientSecret, redirectURL string) ProviderSpec {
 		},
 		RequiredScope: GoogleCalendarReadonly,
 		Identify:      googleIdentify,
-		Revoke:        googleRevoke(GoogleRevokeURL),
+		Revoke:        GoogleRevoke(GoogleRevokeURL),
 	}
 }
 
 // GoogleRevokeURL is Google's OAuth token revocation endpoint (RFC 7009).
 const GoogleRevokeURL = "https://oauth2.googleapis.com/revoke"
 
-// googleRevoke revokes a token at Google. Revoking a refresh token also
-// revokes the access tokens issued from it. A token Google no longer
-// knows (already revoked or expired) counts as revoked.
-func googleRevoke(revokeURL string) func(context.Context, *http.Client, string) error {
+// GoogleRevoke returns a token revoker for revokeURL (GoogleRevokeURL in
+// production, a fake in tests). Revoking a refresh token also revokes the
+// access tokens issued from it. A token Google no longer knows (already
+// revoked or expired) counts as revoked.
+func GoogleRevoke(revokeURL string) func(context.Context, *http.Client, string) error {
 	return func(ctx context.Context, c *http.Client, token string) error {
 		form := url.Values{"token": {token}}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, revokeURL, strings.NewReader(form.Encode()))

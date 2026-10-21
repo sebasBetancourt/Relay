@@ -55,7 +55,7 @@ func disconnectService(t *testing.T, accounts AccountStore, provider Provider, r
 func TestDisconnectRevokesRefreshTokenAtGoogle(t *testing.T) {
 	srv, calls, token := revokeServer(t, http.StatusOK, `{}`)
 	fake := &disconnectFake{prev: seedActiveAccount(t, testVault(t), time.Now().Add(time.Hour))}
-	svc := disconnectService(t, fake, ProviderGoogle, googleRevoke(srv.URL))
+	svc := disconnectService(t, fake, ProviderGoogle, GoogleRevoke(srv.URL))
 
 	if err := svc.Disconnect(context.Background(), "tenant-1", "acct-1"); err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestDisconnectRevokesRefreshTokenAtGoogle(t *testing.T) {
 func TestDisconnectSucceedsWhenRevokeFails(t *testing.T) {
 	srv, calls, _ := revokeServer(t, http.StatusServiceUnavailable, `{}`)
 	fake := &disconnectFake{prev: seedActiveAccount(t, testVault(t), time.Now().Add(time.Hour))}
-	svc := disconnectService(t, fake, ProviderGoogle, googleRevoke(srv.URL))
+	svc := disconnectService(t, fake, ProviderGoogle, GoogleRevoke(srv.URL))
 
 	// The local disconnect already committed: a provider outage is logged,
 	// not returned.
@@ -139,7 +139,7 @@ func TestGoogleRevoke(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			err := googleRevoke(srv.URL)(context.Background(), srv.Client(), "tok-123")
+			err := GoogleRevoke(srv.URL)(context.Background(), srv.Client(), "tok-123")
 			switch {
 			case tt.wantOK && err != nil:
 				t.Fatalf("err = %v, want nil", err)
