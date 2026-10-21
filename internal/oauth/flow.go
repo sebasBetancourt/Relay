@@ -56,6 +56,9 @@ type AccountStore interface {
 	// replica, and stores fn's update in the same transaction.
 	RefreshLocked(ctx context.Context, accountID string, fn func(cur store.StoredAccount) (*store.TokenUpdate, error)) error
 	MarkRevoked(ctx context.Context, accountID string) error
+	// Disconnect sets status=disconnected, deletes the tokens and returns
+	// the account as it was.
+	Disconnect(ctx context.Context, accountID, tenantID string) (store.StoredAccount, error)
 }
 
 // Cipher is the vault surface (*vault.Vault implements it).

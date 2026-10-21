@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -368,5 +369,90 @@ func TestRefreshLockedSerializesReplicas(t *testing.T) {
 	}
 	if !bytes.Equal(bSaw, []byte("refresh-A")) {
 		t.Fatalf("replica B saw %q, want A's rotated refresh token", bSaw)
+	}
+}
+
+func TestListForTenantKeysetPaging(t *testing.T) {
+	tenants := newTestTenants(t)
+	accounts := NewAccounts(tenants.db)
+	ctx := context.Background()
+	tenant := createTenant(t, tenants, "List", apikey.Generate(apikey.EnvTest))
+	other := createTenant(t, tenants, "List other", apikey.Generate(apikey.EnvTest))
+
+	var want []string
+	for i := range 5 {
+		want = append(want, seedTokenAccount(t, accounts, tenant.ID, fmt.Sprintf("list-%s-%d", tenant.ID[:8], i), fmt.Sprintf("u%d@ex.com", i)))
+	}
+	seedTokenAccount(t, accounts, other.ID, "list-other-"+other.ID[:8], "x@ex.com")
+
+	var got []string
+	var after *AccountCursor
+	for pages := 0; ; pages++ {
+		if pages > 5 {
+			t.Fatal("paging did not terminate")
+		}
+		rows, err := accounts.ListForTenant(ctx, tenant.ID, 2, after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if r.Provider != "microsoft" || r.Status != "active" || r.Email == "" || r.ConnectedAt.IsZero() {
+				t.Fatalf("row = %+v", r)
+			}
+			got = append(got, r.ID)
+		}
+		if len(rows) < 2 {
+			break
+		}
+		last := rows[len(rows)-1]
+		after = &AccountCursor{CreatedAt: last.ConnectedAt, ID: last.ID}
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("paged ids = %v, want %v (creation order, no other tenant)", got, want)
+	}
+}
+
+func TestDisconnect(t *testing.T) {
+	tenants := newTestTenants(t)
+	accounts := NewAccounts(tenants.db)
+	ctx := context.Background()
+	tenant := createTenant(t, tenants, "Disconnect", apikey.Generate(apikey.EnvTest))
+	other := createTenant(t, tenants, "Disconnect other", apikey.Generate(apikey.EnvTest))
+	sub := "disc-" + tenant.ID[:8]
+	id := seedTokenAccount(t, accounts, tenant.ID, sub, "ana@ex.com")
+
+	// Another tenant cannot disconnect it, and learns nothing.
+	if _, err := accounts.Disconnect(ctx, id, other.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other tenant: err = %v, want ErrNotFound", err)
+	}
+	if _, err := accounts.Disconnect(ctx, "not-a-uuid", tenant.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("bad id: err = %v, want ErrNotFound", err)
+	}
+
+	prev, err := accounts.Disconnect(ctx, id, tenant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prev.Status != "active" || !prev.HasTokens || !bytes.Equal(prev.RefreshEnc, []byte("refresh-0")) {
+		t.Fatalf("prev = %+v, want the account as it was, with tokens", prev)
+	}
+	now, _ := accounts.AccountForTenant(ctx, id, tenant.ID)
+	if now.Status != "disconnected" || now.HasTokens {
+		t.Fatalf("after = %+v, want disconnected without tokens", now)
+	}
+
+	// Idempotent: the second call succeeds and says it was already done.
+	again, err := accounts.Disconnect(ctx, id, tenant.ID)
+	if err != nil || again.Status != "disconnected" || again.HasTokens {
+		t.Fatalf("second disconnect = %+v, %v", again, err)
+	}
+
+	// Connecting the same provider account again reactivates the same row.
+	if id2 := seedTokenAccount(t, accounts, tenant.ID, sub, ""); id2 != id {
+		t.Fatalf("reconnect id = %s, want %s", id2, id)
+	}
+	back, _ := accounts.AccountForTenant(ctx, id, tenant.ID)
+	if back.Status != "active" || !back.HasTokens || back.Email != "ana@ex.com" {
+		t.Fatalf("reconnected = %+v", back)
 	}
 }

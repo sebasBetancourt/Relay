@@ -52,6 +52,10 @@ func handleListEvents(log *slog.Logger, cal CalendarReader) http.HandlerFunc {
 
 		page, err := cal.ListEvents(r.Context(), t.ID, accountID, q)
 		if err != nil {
+			if errors.Is(err, calendar.ErrInvalidPageToken) {
+				writeJSON(w, http.StatusBadRequest, queryErrorBody{Error: "invalid_query", Detail: "page_token is invalid"})
+				return
+			}
 			status, code, retryAfter := mapCalendarError(err)
 			if status >= 500 {
 				log.Error("list events failed",
@@ -129,8 +133,12 @@ func mapCalendarError(err error) (status int, code string, retryAfter time.Durat
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, "not_found", 0
+	case errors.Is(err, oauth.ErrAccountDisconnected):
+		return http.StatusConflict, "account_disconnected", 0
 	case errors.Is(err, oauth.ErrAccountRevoked):
 		return http.StatusConflict, "account_revoked", 0
+	case errors.Is(err, calendar.ErrCalendarUnavailable):
+		return http.StatusConflict, "calendar_unavailable", 0
 	case errors.As(err, &rate):
 		return http.StatusTooManyRequests, "provider_rate_limited", rate.RetryAfter
 	case errors.Is(err, calendar.ErrCalendarNotFound):

@@ -329,3 +329,7 @@ func TestFinishWithoutRefreshToken(t *testing.T) {
 		t.Fatalf("scopes = %v", c.Scopes)
 	}
 }
+
+func (f *fakeAccounts) Disconnect(context.Context, string, string) (store.StoredAccount, error) {
+	return store.StoredAccount{}, store.ErrNotFound
+}

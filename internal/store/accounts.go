@@ -281,3 +281,115 @@ func (s *Accounts) SaveConnection(ctx context.Context, c Connection) (accountID 
 	}
 	return accountID, nil
 }
+
+// AccountSummary is what a tenant may see about a connected account:
+// never tokens.
+type AccountSummary struct {
+	ID          string
+	Provider    string
+	Email       string
+	Status      string
+	ConnectedAt time.Time
+}
+
+// AccountCursor is the keyset position after the last listed account.
+type AccountCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+// ListForTenant returns up to limit accounts of tenantID ordered by
+// (created_at, id), starting after the cursor (nil = first page). Keyset
+// paging stays fast and stable while accounts are added or removed, unlike
+// OFFSET. Served by idx_connected_accounts_tenant_created.
+func (s *Accounts) ListForTenant(ctx context.Context, tenantID string, limit int, after *AccountCursor) ([]AccountSummary, error) {
+	var afterAt *time.Time
+	var afterID *string
+	if after != nil {
+		afterAt, afterID = &after.CreatedAt, &after.ID
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id::text, provider::text, COALESCE(email, ''), status::text, created_at
+		FROM connected_accounts
+		WHERE tenant_id = $1
+		  AND ($2::timestamptz IS NULL OR (created_at, id) > ($2, $3::uuid))
+		ORDER BY created_at, id
+		LIMIT $4`,
+		tenantID, afterAt, afterID, limit,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgInvalidTextRepr {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (AccountSummary, error) {
+		var a AccountSummary
+		err := row.Scan(&a.ID, &a.Provider, &a.Email, &a.Status, &a.ConnectedAt)
+		a.ConnectedAt = a.ConnectedAt.UTC()
+		return a, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	return out, nil
+}
+
+// Disconnect marks the tenant's account as disconnected and deletes its
+// tokens in one transaction, returning the account as it was (tokens
+// included) so the caller can revoke them at the provider afterwards.
+// Missing, wrong-tenant and non-uuid ids → ErrNotFound. Disconnecting an
+// already disconnected account succeeds (the returned Status says so).
+//
+// A refresh in flight holds the token row lock; the DELETE waits for it,
+// so the refresh cannot write tokens back after the disconnect.
+func (s *Accounts) Disconnect(ctx context.Context, accountID, tenantID string) (StoredAccount, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return StoredAccount{}, fmt.Errorf("disconnect: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		prev      StoredAccount
+		expiresAt *time.Time
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT a.id::text, a.tenant_id::text, a.provider::text, a.provider_account_id,
+		       COALESCE(a.email, ''), a.status::text,
+		       t.access_token_enc, t.access_nonce, t.refresh_token_enc, t.refresh_nonce, t.expires_at
+		FROM connected_accounts a
+		LEFT JOIN oauth_tokens t ON t.account_id = a.id
+		WHERE a.id = $1 AND a.tenant_id = $2
+		FOR UPDATE OF a`,
+		accountID, tenantID,
+	).Scan(
+		&prev.ID, &prev.TenantID, &prev.Provider, &prev.ProviderAccountID, &prev.Email, &prev.Status,
+		&prev.AccessEnc, &prev.AccessNonce, &prev.RefreshEnc, &prev.RefreshNonce, &expiresAt,
+	)
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.Is(err, pgx.ErrNoRows), errors.As(err, &pgErr) && pgErr.Code == pgInvalidTextRepr:
+		return StoredAccount{}, ErrNotFound
+	case err != nil:
+		return StoredAccount{}, fmt.Errorf("disconnect: select: %w", err)
+	}
+	if expiresAt != nil {
+		prev.ExpiresAt = expiresAt.UTC()
+		prev.HasTokens = true
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE connected_accounts SET status = 'disconnected', updated_at = now()
+		WHERE id = $1`, accountID); err != nil {
+		return StoredAccount{}, fmt.Errorf("disconnect: status: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM oauth_tokens WHERE account_id = $1`, accountID); err != nil {
+		return StoredAccount{}, fmt.Errorf("disconnect: tokens: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return StoredAccount{}, fmt.Errorf("disconnect: commit: %w", err)
+	}
+	return prev, nil
+}

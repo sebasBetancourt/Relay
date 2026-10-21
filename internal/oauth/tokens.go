@@ -23,6 +23,10 @@ var (
 	// longer accepts its refresh token. The user must connect again.
 	ErrAccountRevoked = errors.New("account revoked")
 
+	// ErrAccountDisconnected: the tenant disconnected the account on
+	// purpose (DELETE /v1/accounts/{id}). It can be connected again.
+	ErrAccountDisconnected = errors.New("account disconnected")
+
 	// errNeedsRevoke is returned from inside the refresh lock: revoking
 	// writes the same account, so it must happen after the lock is released.
 	errNeedsRevoke = errors.New("refresh token no longer valid")
@@ -56,7 +60,11 @@ func (s *Service) token(ctx context.Context, tenantID, accountID string, force b
 	if err != nil {
 		return AccessToken{}, err
 	}
-	if acct.Status != "active" {
+	switch acct.Status {
+	case "active":
+	case "disconnected":
+		return AccessToken{}, ErrAccountDisconnected
+	default:
 		return AccessToken{}, ErrAccountRevoked
 	}
 	if !acct.HasTokens || len(acct.AccessEnc) == 0 {

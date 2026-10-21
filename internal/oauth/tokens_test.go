@@ -437,3 +437,7 @@ func TestAccessTokenLostCommitKeepsAccount(t *testing.T) {
 		t.Fatal("the previous refresh token must stay in place")
 	}
 }
+
+func (f *tokenFakeAccounts) Disconnect(context.Context, string, string) (store.StoredAccount, error) {
+	return store.StoredAccount{}, store.ErrNotFound
+}

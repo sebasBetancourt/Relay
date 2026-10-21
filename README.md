@@ -137,9 +137,9 @@ How authentication works:
 
 Key format and secret scanning: [docs/secret-scanning.md](docs/secret-scanning.md).
 
-## Connect a Google account
+## Connect an account (Google or Microsoft)
 
-`GET /v1/connect/{provider}` starts the OAuth flow (authorization code + PKCE) for the calling tenant. Only `google` is enabled for now.
+`GET /v1/connect/{provider}` starts the OAuth flow (authorization code + PKCE) for the calling tenant. `{provider}` is `google` or `microsoft` (Outlook / Microsoft 365), whichever is configured. The examples use `google`; Microsoft works the same way.
 
 ```bash
 # Default: 302 to Google's consent screen (open the Location in a browser)
@@ -186,7 +186,7 @@ Tokens are encrypted (AES-256-GCM) and never returned in the body. Reloading the
 
 ## Read events
 
-`GET /v1/calendars/{id}/events` lists events from the connected account’s **primary** calendar. `{id}` is the `account_id` returned by the OAuth callback (`connected_accounts.id`). Requires an API key.
+`GET /v1/calendars/{id}/events` lists events from the connected account’s **primary** calendar, Google or Outlook, in the same shape. `{id}` is the `account_id` returned by the OAuth callback (`connected_accounts.id`). Requires an API key.
 
 ```bash
 # account_id from the callback JSON, or: SELECT id FROM connected_accounts;
@@ -199,7 +199,9 @@ curl -s -H "Authorization: Bearer $(cat demo.key)" \
 | `time_min` | now (RFC3339) | |
 | `time_max` | `time_min + 30d` | Must be after `time_min`; max range 366 days |
 | `max_results` | 50 | 1–250 |
-| `page_token` | — | Opaque; pass through from a previous response |
+| `page_token` | — | Opaque; pass through from a previous response. It carries the first page's window and size, so other parameters are ignored with it |
+
+Paging: keep following `next_page_token` until it is absent. A page may hold fewer events than `max_results` (providers cap page sizes, and cancelled Outlook occurrences are dropped), but never zero unless it is the last one.
 
 Example response:
 
@@ -209,8 +211,8 @@ Example response:
     {
       "id": "…",
       "title": "Standup",
-      "start": "2026-10-20T09:00:00-05:00",
-      "end": "2026-10-20T09:30:00-05:00",
+      "start": "2026-10-20T14:00:00Z",
+      "end": "2026-10-20T14:30:00Z",
       "timezone": "America/Bogota",
       "all_day": false,
       "location": "Zoom",
@@ -222,15 +224,42 @@ Example response:
 }
 ```
 
-Expired access tokens are refreshed silently (60s skew, singleflight per account). If Google rejects the refresh, the account is marked `revoked` and the client gets **409** (reconnect via `/v1/connect/google`).
+Normalization, for both providers:
+
+- `start` / `end`: RFC3339 for timed events, `YYYY-MM-DD` for all-day events (`end` exclusive). Outlook times are returned in UTC (`Z`).
+- `timezone`: the event's IANA zone. Outlook's Windows names (`"SA Pacific Standard Time"`) are mapped with CLDR (`America/Bogota`); unknown zones are left empty, never guessed.
+- Recurring events are expanded into occurrences.
+
+Expired access tokens are refreshed silently: 60s skew, singleflight per account, and a row lock in Postgres so replicas never race (Microsoft rotates the refresh token on every refresh). If the provider rejects the refresh, the account is marked `revoked` and the client gets **409** (reconnect via `/v1/connect/{provider}`).
 
 | Case | Status | `error` |
 | --- | --- | --- |
 | OK | 200 | — |
 | Invalid query | 400 | `invalid_query` |
 | Missing / wrong-tenant account | 404 | `not_found` |
-| Account revoked / refresh invalid | 409 | `account_revoked` |
-| Google rate limit | 429 | `provider_rate_limited` (+ `Retry-After`) |
-| Google down / timeout | 502 | `provider_unavailable` |
+| Account revoked / refresh invalid / MFA required | 409 | `account_revoked` |
+| Account disconnected by the tenant | 409 | `account_disconnected` |
+| Microsoft account without an Outlook mailbox | 409 | `calendar_unavailable` |
+| Provider rate limit | 429 | `provider_rate_limited` (+ `Retry-After`) |
+| Provider down / timeout | 502 | `provider_unavailable` |
 | Unexpected provider response | 502 | `provider_error` |
 | DB / decrypt failure | 500 | `internal error` |
+
+## Manage connected accounts
+
+```bash
+# List the tenant's accounts (no tokens, ever)
+curl -s -H "Authorization: Bearer $(cat acme.key)" "localhost:8080/v1/accounts?limit=50" | jq
+# {"accounts":[{"id":"…","provider":"microsoft","email":"ana@outlook.com","status":"active","connected_at":"…"}],"next_cursor":"…"}
+
+# Disconnect one
+curl -i -X DELETE -H "Authorization: Bearer $(cat acme.key)" localhost:8080/v1/accounts/<account_id>
+# 204 No Content
+```
+
+- `GET /v1/accounts`: `limit` 1–100 (default 50). Pass `cursor=<next_cursor>` for the next page; the cursor is absent on the last page. `status` is `active`, `revoked` (the provider rejected the refresh token) or `disconnected`.
+- `DELETE /v1/accounts/{id}`: deletes the tokens and marks the account `disconnected` (204). It is idempotent and the account can be connected again.
+  - Google tokens are also revoked at Google (best effort; a Google outage never blocks the disconnect).
+  - Microsoft has no per-app revocation endpoint: users remove the app at account.microsoft.com → Privacy → Apps and services.
+- Another tenant's account, or one that does not exist, gives `404 not_found` on both routes.
+

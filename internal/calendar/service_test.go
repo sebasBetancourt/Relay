@@ -3,6 +3,8 @@ package calendar
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,14 +38,16 @@ func (f *fakeTokens) RefreshAccessToken(context.Context, string, string) (oauth.
 }
 
 type fakeSource struct {
-	pages []Page
-	errs  []error
-	n     int
-	toks  []string
+	pages   []Page
+	errs    []error
+	n       int
+	toks    []string
+	queries []Query
 }
 
-func (f *fakeSource) ListEvents(_ context.Context, accessToken string, _ Query) (Page, error) {
+func (f *fakeSource) ListEvents(_ context.Context, accessToken string, q Query) (Page, error) {
 	f.toks = append(f.toks, accessToken)
+	f.queries = append(f.queries, q)
 	i := f.n
 	f.n++
 	var err error
@@ -124,5 +128,125 @@ func TestServiceMissingSource(t *testing.T) {
 	_, err := svc.ListEvents(context.Background(), "t", "a", Query{})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestServicePageTokenRoundTrip(t *testing.T) {
+	tokens := &fakeTokens{access: oauth.AccessToken{Value: "a", Provider: oauth.ProviderMicrosoft}}
+	src := &fakeSource{pages: []Page{
+		{Events: []Event{{ID: "e1"}}, NextPageToken: "skiptoken:abc"},
+		{Events: []Event{{ID: "e2"}}},
+	}}
+	svc := NewService(tokens, map[oauth.Provider]Source{oauth.ProviderMicrosoft: src})
+
+	page1 := Query{
+		TimeMin:    time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC),
+		TimeMax:    time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC),
+		MaxResults: 10,
+	}
+	p1, err := svc.ListEvents(context.Background(), "t", "acc", page1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p1.NextPageToken == "" || p1.NextPageToken == "skiptoken:abc" {
+		t.Fatalf("next token must be Relay's opaque wrapper, got %q", p1.NextPageToken)
+	}
+
+	// Page 2: the client sends only page_token (its own time_min would
+	// default to a different "now"). Relay replays page 1's window and size.
+	page2 := Query{TimeMin: time.Now(), TimeMax: time.Now().Add(time.Hour), MaxResults: 50, PageToken: p1.NextPageToken}
+	p2, err := svc.ListEvents(context.Background(), "t", "acc", page2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := src.queries[1]
+	if got.PageToken != "skiptoken:abc" || !got.TimeMin.Equal(page1.TimeMin) || !got.TimeMax.Equal(page1.TimeMax) || got.MaxResults != 10 {
+		t.Fatalf("page 2 query = %+v, want page 1 window with the provider token", got)
+	}
+	if p2.NextPageToken != "" {
+		t.Fatalf("last page must have no next token, got %q", p2.NextPageToken)
+	}
+}
+
+func TestServiceRejectsBadPageTokens(t *testing.T) {
+	googleTok := encodePageToken(oauth.ProviderGoogle, "g-token", Query{
+		TimeMin: time.Now(), TimeMax: time.Now().Add(time.Hour), MaxResults: 5,
+	})
+	for name, token := range map[string]string{
+		"other provider's token": googleTok,
+		"not base64":             "%%%",
+		"not json":               "bm90LWpzb24",
+		"too long":               strings.Repeat("A", maxPageTokenLen+1),
+		"empty provider token":   encodePageToken(oauth.ProviderMicrosoft, "", Query{}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			tokens := &fakeTokens{access: oauth.AccessToken{Value: "a", Provider: oauth.ProviderMicrosoft}}
+			src := &fakeSource{}
+			svc := NewService(tokens, map[oauth.Provider]Source{oauth.ProviderMicrosoft: src})
+
+			q := Query{TimeMin: time.Now(), TimeMax: time.Now().Add(time.Hour), MaxResults: 5, PageToken: token}
+			if token == "" {
+				q.PageToken = "x" // an empty wrapper encodes to "", use garbage instead
+			}
+			_, err := svc.ListEvents(context.Background(), "t", "acc", q)
+			if !errors.Is(err, ErrInvalidPageToken) {
+				t.Fatalf("err = %v, want ErrInvalidPageToken", err)
+			}
+			if src.n != 0 {
+				t.Fatal("the provider must not be called with a bad page token")
+			}
+		})
+	}
+}
+
+func TestServiceSkipsEmptyPages(t *testing.T) {
+	tokens := &fakeTokens{access: oauth.AccessToken{Value: "a", Provider: oauth.ProviderMicrosoft}}
+	ev := Event{ID: "e1", Provider: "microsoft"}
+	src := &fakeSource{pages: []Page{
+		{NextPageToken: "skiptoken:1"},                      // all cancelled
+		{NextPageToken: "skiptoken:2"},                      // all cancelled
+		{Events: []Event{ev}, NextPageToken: "skiptoken:3"}, // first real page
+	}}
+	svc := NewService(tokens, map[oauth.Provider]Source{oauth.ProviderMicrosoft: src})
+
+	page, err := svc.ListEvents(context.Background(), "t", "acc", Query{
+		TimeMin: time.Now(), TimeMax: time.Now().Add(time.Hour), MaxResults: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || src.n != 3 {
+		t.Fatalf("events = %d after %d provider calls, want 1 after 3", len(page.Events), src.n)
+	}
+	if src.queries[1].PageToken != "skiptoken:1" || src.queries[2].PageToken != "skiptoken:2" {
+		t.Fatalf("hops must follow the provider tokens: %+v", src.queries)
+	}
+	c, err := decodePageToken(page.NextPageToken)
+	if err != nil || c.T != "skiptoken:3" {
+		t.Fatalf("next token = %+v %v, want the last page's token", c, err)
+	}
+}
+
+func TestServiceBoundsEmptyPageHops(t *testing.T) {
+	tokens := &fakeTokens{access: oauth.AccessToken{Value: "a", Provider: oauth.ProviderMicrosoft}}
+	var pages []Page
+	for i := range 20 {
+		pages = append(pages, Page{NextPageToken: fmt.Sprintf("skiptoken:%d", i)})
+	}
+	src := &fakeSource{pages: pages}
+	svc := NewService(tokens, map[oauth.Provider]Source{oauth.ProviderMicrosoft: src})
+
+	page, err := svc.ListEvents(context.Background(), "t", "acc", Query{
+		TimeMin: time.Now(), TimeMax: time.Now().Add(time.Hour), MaxResults: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.n != 1+maxEmptyPageHops {
+		t.Fatalf("provider calls = %d, want %d", src.n, 1+maxEmptyPageHops)
+	}
+	// Still empty after the bound: the client gets a token to continue.
+	if len(page.Events) != 0 || page.NextPageToken == "" {
+		t.Fatalf("page = %+v, want empty with a next token", page)
 	}
 }

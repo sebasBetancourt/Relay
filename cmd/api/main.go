@@ -10,6 +10,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	// Embed the IANA time zone database: the distroless image has none, and
+	// Microsoft events are normalized with time.LoadLocation.
+	_ "time/tzdata"
 
 	"github.com/joho/godotenv"
 
@@ -59,13 +62,14 @@ func main() {
 	}
 	if m := cfg.Microsoft; m != nil {
 		providers[oauth.ProviderMicrosoft] = oauth.MicrosoftSpec(m.ClientID, m.ClientSecret, m.RedirectURL, m.Tenant, oauth.MicrosoftGraphURL)
-		// The Graph calendar source lands with Microsoft events.
+		sources[oauth.ProviderMicrosoft] = calendar.NewMicrosoftSource(apiHTTP)
 	}
 
 	oauthStates := store.NewOAuthStates(pool)
+	accounts := store.NewAccounts(pool)
 	oauthSvc := oauth.NewService(oauth.Deps{
 		States:     oauthStates,
-		Accounts:   store.NewAccounts(pool),
+		Accounts:   accounts,
 		Vault:      vlt,
 		Providers:  providers,
 		HTTPClient: apiHTTP,
@@ -81,6 +85,9 @@ func main() {
 		Connect:  oauthSvc,
 		Callback: oauthSvc,
 		Calendar: calendarSvc,
+
+		Accounts:   accounts,
+		Disconnect: oauthSvc,
 	}
 
 	srv := &http.Server{

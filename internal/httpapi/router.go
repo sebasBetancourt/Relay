@@ -22,6 +22,9 @@ type Deps struct {
 	Connect  Connector
 	Callback Callbacker
 	Calendar CalendarReader
+	// Accounts lists the tenant's connected accounts; Disconnect removes one.
+	Accounts   AccountLister
+	Disconnect Disconnector
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -57,6 +60,8 @@ func NewRouter(d Deps) http.Handler {
 	v1.HandleFunc("GET /v1/me", handleMe)
 	v1.HandleFunc("GET /v1/connect/{provider}", handleConnect(log, d.Connect))
 	v1.HandleFunc("GET /v1/calendars/{id}/events", handleListEvents(log, d.Calendar))
+	v1.HandleFunc("GET /v1/accounts", handleListAccounts(log, d.Accounts))
+	v1.HandleFunc("DELETE /v1/accounts/{id}", handleDisconnectAccount(log, d.Disconnect))
 	mux.Handle("/v1/", middleware.RequireAPIKey(log, d.Tenants, d.Env)(v1))
 
 	// Outer runs first. middleware.RequestID must wrap Recover/middleware.Logger so they see the id in context.

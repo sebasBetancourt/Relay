@@ -137,7 +137,7 @@ sequenceDiagram
 
 #### B. Read events
 
-**Implemented:** `GET /v1/calendars/{id}/events` (steps 6–9). `{id}` is `connected_accounts.id` (the `account_id` from the callback); events come from that account’s **primary** calendar. Default window: `now` → `now+30d`. Refresh uses a **60s skew** and **singleflight per account** so concurrent requests share one token refresh. AAD for decrypt matches connect: `("oauth_tokens", tenantID, provider, providerAccountID, column)`.
+**Implemented for Google and Microsoft** (Microsoft Graph `/me/calendarView` with `Prefer: outlook.timezone="UTC"`, Windows → IANA zones from CLDR, cancelled occurrences dropped, empty pages skipped). `page_token` is Relay's own opaque cursor wrapping the provider token plus the first page's window; for Graph only the `$skiptoken`/`$skip` value of `@odata.nextLink` is kept, never the URL (anti-SSRF). Accounts: `GET /v1/accounts` (keyset paging) and `DELETE /v1/accounts/{id}` (status `disconnected`, tokens deleted, Google token revoked best effort). `GET /v1/calendars/{id}/events` (steps 6–9). `{id}` is `connected_accounts.id` (the `account_id` from the callback); events come from that account’s **primary** calendar. Default window: `now` → `now+30d`. Refresh uses a **60s skew** and **singleflight per account** so concurrent requests share one token refresh. AAD for decrypt matches connect: `("oauth_tokens", tenantID, provider, providerAccountID, column)`.
 
 6. Client calls `GET /v1/calendars/{id}/events`.
 

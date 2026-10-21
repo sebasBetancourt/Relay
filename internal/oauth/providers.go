@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -57,6 +59,10 @@ type ProviderSpec struct {
 	// Identify returns who the account is, using the token response and, if
 	// needed, an API call with the injected HTTP client.
 	Identify func(ctx context.Context, c *http.Client, tok *oauth2.Token, clientID string) (Identity, error)
+	// Revoke invalidates a token at the provider when an account is
+	// disconnected. Nil means the provider has no per-app revocation
+	// endpoint (Microsoft): the user removes the app from their account.
+	Revoke func(ctx context.Context, c *http.Client, token string) error
 }
 
 func (p ProviderSpec) scopeGranted(granted []string) bool {
@@ -94,6 +100,42 @@ func GoogleSpec(clientID, clientSecret, redirectURL string) ProviderSpec {
 		},
 		RequiredScope: GoogleCalendarReadonly,
 		Identify:      googleIdentify,
+		Revoke:        googleRevoke(GoogleRevokeURL),
+	}
+}
+
+// GoogleRevokeURL is Google's OAuth token revocation endpoint (RFC 7009).
+const GoogleRevokeURL = "https://oauth2.googleapis.com/revoke"
+
+// googleRevoke revokes a token at Google. Revoking a refresh token also
+// revokes the access tokens issued from it. A token Google no longer
+// knows (already revoked or expired) counts as revoked.
+func googleRevoke(revokeURL string) func(context.Context, *http.Client, string) error {
+	return func(ctx context.Context, c *http.Client, token string) error {
+		form := url.Values{"token": {token}}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, revokeURL, strings.NewReader(form.Encode()))
+		if err != nil {
+			return fmt.Errorf("google revoke: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := c.Do(req)
+		if err != nil {
+			return fmt.Errorf("%w: google revoke: %v", ErrProviderUnavailable, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+
+		switch {
+		case resp.StatusCode == http.StatusOK:
+			return nil
+		case resp.StatusCode == http.StatusBadRequest && strings.Contains(string(body), "invalid_token"):
+			return nil
+		case resp.StatusCode >= 500:
+			return fmt.Errorf("%w: google revoke status %d", ErrProviderUnavailable, resp.StatusCode)
+		default:
+			return fmt.Errorf("google revoke: status %d", resp.StatusCode)
+		}
 	}
 }
 

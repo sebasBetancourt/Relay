@@ -132,6 +132,9 @@ func TestListEventsErrorTable(t *testing.T) {
 	}{
 		{"not found", store.ErrNotFound, 404, "not_found", ""},
 		{"revoked", oauth.ErrAccountRevoked, 409, "account_revoked", ""},
+		{"disconnected", oauth.ErrAccountDisconnected, 409, "account_disconnected", ""},
+		{"no mailbox", calendar.ErrCalendarUnavailable, 409, "calendar_unavailable", ""},
+		{"bad page token", calendar.ErrInvalidPageToken, 400, "invalid_query", ""},
 		{"rate", &calendar.RateLimitedError{RetryAfter: 7 * time.Second}, 429, "provider_rate_limited", "7"},
 		{"unavailable", calendar.ErrProviderUnavailable, 502, "provider_unavailable", ""},
 		{"bad response", calendar.ErrProviderBadResponse, 502, "provider_error", ""},
