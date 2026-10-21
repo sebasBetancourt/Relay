@@ -9,6 +9,8 @@
 ### Scopes
 
 #### Scope v0.1
+
+> Status: delivered in **v0.1.0**, with Google and Microsoft. MSAL was replaced by `golang.org/x/oauth2` ([ADR 0005](adr/0005-oauth2-for-microsoft.md)). Disconnect is `DELETE /v1/accounts/{id}`.
 - Management minim of users, tenats with API key
 - OAuth 2.0 authorization code flow + PKCE with Google and Microsoft
 - Microsoft through `golang.org/x/oauth2` (Entra ID endpoints), not MSAL, so both providers share one token lifecycle ([ADR 0005](adr/0005-oauth2-for-microsoft.md))

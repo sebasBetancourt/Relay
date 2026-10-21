@@ -8,10 +8,16 @@ endif
 
 DATABASE_URL ?= postgres://relay:relay@localhost:5435/relay?sslmode=disable
 
-# Compile both binaries into bin/ (gitignored): bin/relay and bin/relayctl.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILDINFO := github.com/sebasBetancourt/relay/internal/buildinfo
+LDFLAGS := -s -w -X $(BUILDINFO).Version=$(VERSION) -X $(BUILDINFO).Commit=$(COMMIT) -X $(BUILDINFO).Date=$(DATE)
+
+# Compile both binaries into bin/ (gitignored), stamped with the version.
 build:
-	go build -o bin/relay ./cmd/api
-	go build -o bin/relayctl ./cmd/relayctl
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/relay ./cmd/api
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/relayctl ./cmd/relayctl
 
 migrate-up:
 	migrate -path migrations -database "$(DATABASE_URL)" up

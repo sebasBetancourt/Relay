@@ -1,0 +1,93 @@
+# GoReleaser v2. Runs from .github/workflows/release.yml when a v* tag is
+# pushed. Try it locally without publishing:
+#   goreleaser release --snapshot --clean
+version: 2
+
+project_name: relay
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  - id: relay
+    main: ./cmd/api
+    binary: relay
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/sebasBetancourt/relay/internal/buildinfo.Version={{ .Tag }}
+      - -X github.com/sebasBetancourt/relay/internal/buildinfo.Commit={{ .FullCommit }}
+      - -X github.com/sebasBetancourt/relay/internal/buildinfo.Date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}" # reproducible builds
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+  - id: relayctl
+    main: ./cmd/relayctl
+    binary: relayctl
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/sebasBetancourt/relay/internal/buildinfo.Version={{ .Tag }}
+      - -X github.com/sebasBetancourt/relay/internal/buildinfo.Commit={{ .FullCommit }}
+      - -X github.com/sebasBetancourt/relay/internal/buildinfo.Date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: relay
+    ids: [relay, relayctl]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Everything needed to run it: the migrations travel with the binaries.
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - .env.example
+      - migrations/*.sql
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+dockers_v2:
+  - id: relay
+    ids: [relay, relayctl]
+    dockerfile: Dockerfile.release
+    images:
+      - ghcr.io/sebasbetancourt/relay
+    tags:
+      - "{{ .Tag }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: relay
+      org.opencontainers.image.description: "One API for Google Calendar and Outlook: OAuth, encrypted tokens, normalized events."
+      org.opencontainers.image.source: https://github.com/sebasBetancourt/Relay
+      org.opencontainers.image.licenses: MIT
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .CommitDate }}"
+
+changelog:
+  # Release notes come from CHANGELOG.md (see the release workflow).
+  disable: true
+
+release:
+  github:
+    owner: sebasBetancourt
+    name: Relay
+  draft: false
+  prerelease: auto
+  name_template: "Relay {{ .Tag }}"

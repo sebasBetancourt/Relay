@@ -15,6 +15,16 @@ services:
       timeout: 3s
       retries: 5
 
+  # Applies migrations/ once, then exits; the API waits for it.
+  migrate:
+    image: migrate/migrate:v4.18.3
+    volumes:
+      - ./migrations:/migrations:ro
+    command: ["-path", "/migrations", "-database", "postgres://relay:relay@postgres:5432/relay?sslmode=disable", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: .
     environment:
@@ -22,7 +32,6 @@ services:
       DATABASE_URL: postgres://relay:relay@postgres:5432/relay?sslmode=disable
       LOG_LEVEL: info
       RELAY_ENV: ${RELAY_ENV:?set RELAY_ENV in .env (live or test)}
-      # Read from .env; compose refuses to start if any is missing.
       # Providers are optional (configure at least one); the API validates them at startup.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
@@ -36,8 +45,8 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   # UI for Postgres: docker compose --profile tools up -d adminer
   # Open http://localhost:8081  → System: PostgreSQL, Server: postgres, User/Pass/DB: relay

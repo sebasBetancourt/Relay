@@ -1,0 +1,43 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Security issues go through private reporting, not here** (see SECURITY.md).
+        Never paste API keys, OAuth tokens, client secrets or `ENCRYPTION_KEY` values.
+  - type: input
+    id: version
+    attributes:
+      label: Relay version
+      description: Output of `relay --version`, or the image tag.
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options: [Google, Microsoft, Both, Not provider-specific]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Requests you sent (with secrets removed) and the responses, including the X-Request-ID header.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: API log lines for the request id. Remove anything sensitive.
+      render: text

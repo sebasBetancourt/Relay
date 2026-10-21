@@ -16,6 +16,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/sebasBetancourt/relay/internal/buildinfo"
 	"github.com/sebasBetancourt/relay/internal/calendar"
 	"github.com/sebasBetancourt/relay/internal/config"
 	"github.com/sebasBetancourt/relay/internal/httpapi"
@@ -26,6 +27,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Println("relay", buildinfo.String())
+		return
+	}
 	_ = godotenv.Load()
 
 	cfg, err := config.Load()
@@ -114,7 +119,7 @@ func main() {
 	}()
 
 	go func() {
-		log.Info("starting relay api", "port", cfg.Port, "env", cfg.Env, "providers", cfg.Providers())
+		log.Info("starting relay api", "version", buildinfo.Version, "port", cfg.Port, "env", cfg.Env, "providers", cfg.Providers())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server error", "err", err)
 			os.Exit(1)

@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The release workflow runs this whole pipeline before publishing.
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -57,10 +62,31 @@ jobs:
       - name: Build
         run: make build
 
+  vulncheck:
+    # Known vulnerabilities in the code paths Relay actually calls.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint api/openapi.yaml
+        run: npx --yes @redocly/cli@1 lint api/openapi.yaml
+
   docker:
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
       - name: Build image
-        run: docker build -t relay:ci .
+        run: docker build --build-arg VERSION=ci --build-arg COMMIT=${{ github.sha }} -t relay:ci .
+      - name: Smoke test
+        run: |
+          docker run --rm relay:ci --version
+          docker run --rm --entrypoint /usr/local/bin/relayctl relay:ci version

@@ -92,3 +92,13 @@ func TestTenantCreateWithRealDB(t *testing.T) {
 		t.Fatalf("tenant name = %q", tenant.Name)
 	}
 }
+
+func TestRunVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"version"}, &stdout, &stderr, envFrom(nil)); code != exitOK {
+		t.Fatalf("exit code = %d", code)
+	}
+	if !strings.HasPrefix(stdout.String(), "relayctl ") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}

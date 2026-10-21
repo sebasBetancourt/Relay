@@ -1,0 +1,8 @@
+# Redocly CLI config for `redocly lint api/openapi.yaml` (run in CI).
+extends:
+  - recommended
+rules:
+  # The documented server is the local Compose stack; deployments set their own.
+  no-server-example.com: off
+  # /healthz and /readyz have no client errors by design.
+  operation-4xx-response: off

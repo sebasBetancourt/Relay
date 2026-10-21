@@ -19,6 +19,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/sebasBetancourt/relay/internal/apikey"
+	"github.com/sebasBetancourt/relay/internal/buildinfo"
 	"github.com/sebasBetancourt/relay/internal/config"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
@@ -32,6 +33,7 @@ const (
 
 const usage = `Usage:
   relayctl tenant create --name <name>
+  relayctl version
 
 Environment:
   DATABASE_URL  Postgres connection string
@@ -46,6 +48,10 @@ func main() {
 // run holds all the logic so tests can call it with fake args, env and
 // output instead of spawning a process.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
+		say(stdout, "relayctl %s\n", buildinfo.String())
+		return exitOK
+	}
 	if len(args) < 2 || args[0] != "tenant" || args[1] != "create" {
 		say(stderr, usage)
 		return exitUsage

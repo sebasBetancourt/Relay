@@ -1,7 +1,18 @@
+# Secrets: never in the build context, at any depth.
 .env
 .env.*
+**/.env
+**/.env.*
+*.key
+*.pem
+
+# Not needed to build the binaries.
 .git
+.github
+.claude
 docs
+api
+scripts
 *.md
 migrations
 bin/

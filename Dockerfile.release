@@ -1,0 +1,8 @@
+# Used by GoReleaser: the binaries are already built (and stamped) for the
+# target platform, so this image only copies them.
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/relay $TARGETPLATFORM/relayctl /usr/local/bin/
+EXPOSE 8080
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/relay"]

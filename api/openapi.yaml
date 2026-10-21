@@ -1,0 +1,468 @@
+openapi: 3.1.0
+info:
+  title: Relay API
+  version: 0.1.0
+  summary: One API for Google Calendar and Outlook.
+  description: |
+    Relay connects your users' Google and Microsoft (Outlook / Microsoft 365)
+    accounts once, keeps their OAuth tokens encrypted and fresh, and serves
+    their calendar events in one normalized shape.
+
+    **Authentication.** Every `/v1` route except the OAuth callback requires
+    `Authorization: Bearer <api key>`. Keys look like `rly_live_…` or
+    `rly_test_…` and are issued with `relayctl tenant create`. Any key problem
+    answers the same `401 {"error":"unauthorized"}`.
+
+    **Tenancy.** Everything is scoped to the tenant that owns the key. An
+    account of another tenant is indistinguishable from one that does not
+    exist (`404 not_found`).
+
+    **Errors.** Error bodies are `{"error": "<code>"}`; query validation errors
+    add a human-readable `detail`. Every response carries `X-Request-ID`.
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    name: Relay on GitHub
+    url: https://github.com/sebasBetancourt/Relay
+servers:
+  - url: http://localhost:8080
+    description: Local (docker compose up)
+security:
+  - apiKey: []
+tags:
+  - name: Health
+    description: Probes for orchestrators (no API key).
+  - name: Tenant
+    description: The tenant behind the API key.
+  - name: Connect
+    description: Link a Google or Microsoft account to the calling tenant (OAuth 2.0 authorization code + PKCE).
+  - name: Accounts
+    description: The tenant's connected provider accounts.
+  - name: Events
+    description: Calendar events, normalized across providers.
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      operationId: healthz
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: The process is up.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            text/plain:
+              schema: { type: string, const: ok }
+
+  /readyz:
+    get:
+      tags: [Health]
+      operationId: readyz
+      summary: Readiness probe (database reachable)
+      security: []
+      responses:
+        "200":
+          description: Ready to serve traffic.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            text/plain:
+              schema: { type: string, const: ready }
+        "503":
+          description: The database is unreachable.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /v1/me:
+    get:
+      tags: [Tenant]
+      operationId: getMe
+      summary: The tenant that owns the API key
+      description: The simplest end-to-end check that a key works.
+      responses:
+        "200":
+          description: The calling tenant.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/connect/{provider}:
+    get:
+      tags: [Connect]
+      operationId: startConnect
+      summary: Start connecting a provider account
+      description: |
+        Creates a one-time `state` (valid 10 minutes) and a PKCE verifier,
+        then sends the user to the provider's consent screen. Browsers cannot
+        send your API key, so call this from your backend:
+
+        - default: `302` with `Location` set to the consent URL;
+        - with `Accept: application/json`: `200` with the URL in the body, to
+          hand to your user's browser.
+      parameters:
+        - $ref: "#/components/parameters/Provider"
+      responses:
+        "200":
+          description: Consent URL (when `Accept` includes `application/json`).
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorization_url]
+                properties:
+                  authorization_url:
+                    type: string
+                    format: uri
+                    examples: ["https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=…&code_challenge=…&state=…"]
+        "302":
+          description: Redirect to the provider's consent screen.
+          headers:
+            Location:
+              description: The consent URL.
+              schema: { type: string, format: uri }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "400":
+          description: Unknown provider, or not configured on this deployment.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: unsupported_provider }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /v1/oauth/{provider}/callback:
+    get:
+      tags: [Connect]
+      operationId: oauthCallback
+      summary: OAuth callback (called by the provider through the browser)
+      description: |
+        Public: the browser returns here from the consent screen without an API
+        key. Security comes from the one-time `state`. Relay exchanges the
+        code (with the PKCE verifier), checks the calendar scope, identifies
+        the account, encrypts the tokens and stores the account. Reloading
+        the same URL answers `400 invalid_state`.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Provider"
+        - { name: state, in: query, required: true, schema: { type: string } }
+        - { name: code, in: query, description: Present when the user accepted., schema: { type: string } }
+        - { name: error, in: query, description: Present when the user declined (e.g. `access_denied`)., schema: { type: string } }
+      responses:
+        "200":
+          description: The account is connected (or reconnected; the `account_id` is stable).
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+            Cache-Control: { $ref: "#/components/headers/NoStore" }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, provider, account_id]
+                properties:
+                  status: { type: string, const: connected }
+                  provider: { $ref: "#/components/schemas/Provider" }
+                  account_id: { type: string, format: uuid }
+                  email: { type: string, format: email, description: Present when the provider returned one. }
+        "400":
+          description: |
+            - `invalid_request`: missing `state`, or missing both `code` and `error`.
+            - `unsupported_provider`
+            - `invalid_state`: unknown, already used or expired. Start a new connect.
+            - `access_denied`: the user declined.
+            - `exchange_failed`: the provider rejected the code.
+            - `insufficient_scope`: the user unchecked the calendar permission.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "`account_already_connected`: the provider account belongs to another tenant."
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "502": { $ref: "#/components/responses/ProviderError" }
+
+  /v1/accounts:
+    get:
+      tags: [Accounts]
+      operationId: listAccounts
+      summary: List the tenant's connected accounts
+      description: Never includes tokens. Ordered by connection time; pass `next_cursor` back as `cursor` until it is absent.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: cursor, in: query, description: Opaque `next_cursor` from the previous page., schema: { type: string } }
+      responses:
+        "200":
+          description: One page of accounts.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+            Cache-Control: { $ref: "#/components/headers/PrivateNoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountsPage" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /v1/accounts/{id}:
+    delete:
+      tags: [Accounts]
+      operationId: disconnectAccount
+      summary: Disconnect an account
+      description: |
+        Deletes the account's tokens and marks it `disconnected`. Google tokens
+        are also revoked at Google (best effort). Idempotent; connecting the
+        same provider account again reactivates it.
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+      responses:
+        "204":
+          description: Disconnected (or already was).
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /v1/calendars/{id}/events:
+    get:
+      tags: [Events]
+      operationId: listEvents
+      summary: List events of a connected account's primary calendar
+      description: |
+        Google and Outlook events in one shape. Recurring events are expanded;
+        cancelled occurrences are dropped. Access tokens are refreshed
+        silently when they expire.
+
+        Paging: follow `next_page_token` until it is absent. A page may hold
+        fewer than `max_results` events, but never zero unless it is the last.
+        `page_token` carries the first page's window and size, so other query
+        parameters are ignored with it.
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - { name: time_min, in: query, description: Start of the window (RFC 3339). Defaults to now., schema: { type: string, format: date-time } }
+        - { name: time_max, in: query, description: End of the window (RFC 3339). Defaults to `time_min` + 30 days; at most 366 days after `time_min`., schema: { type: string, format: date-time } }
+        - { name: max_results, in: query, schema: { type: integer, minimum: 1, maximum: 250, default: 50 } }
+        - { name: page_token, in: query, description: Opaque `next_page_token` from the previous page., schema: { type: string, maxLength: 4096 } }
+      responses:
+        "200":
+          description: One page of events.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+            Cache-Control: { $ref: "#/components/headers/PrivateNoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventsPage" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            - `account_revoked`: the provider no longer accepts the account's refresh token (access removed, password changed, MFA required). Reconnect.
+            - `account_disconnected`: the tenant disconnected it. Reconnect.
+            - `calendar_unavailable`: a Microsoft account without an Outlook mailbox.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: "`provider_rate_limited`: the provider is throttling; retry after `Retry-After` seconds."
+          headers:
+            Retry-After:
+              schema: { type: integer, minimum: 0 }
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "502": { $ref: "#/components/responses/ProviderError" }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: "rly_live_… | rly_test_…"
+      description: Tenant API key from `relayctl tenant create`. Test keys only work on `RELAY_ENV=test` deployments and live keys on `live`.
+
+  parameters:
+    Provider:
+      name: provider
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/Provider" }
+    AccountID:
+      name: id
+      in: path
+      required: true
+      description: The `account_id` returned by the OAuth callback.
+      schema: { type: string, format: uuid }
+
+  headers:
+    RequestID:
+      description: Request id, echoed from the request's `X-Request-ID` or generated. Quote it in bug reports.
+      schema: { type: string }
+    NoStore:
+      schema: { type: string, const: no-store }
+    PrivateNoStore:
+      schema: { type: string, const: "private, no-store" }
+
+  responses:
+    Unauthorized:
+      description: Missing, malformed, unknown, revoked or wrong-environment API key. Always the same body.
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, examples: ['Bearer realm="relay"'] }
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: unauthorized }
+    NotFound:
+      description: No such account for this tenant (including other tenants' accounts).
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: not_found }
+    InvalidQuery:
+      description: A query parameter is invalid.
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/QueryError" }
+          example: { error: invalid_query, detail: "max_results must be an integer between 1 and 250" }
+    ProviderError:
+      description: |
+        - `provider_unavailable`: the provider is down or timed out.
+        - `provider_error`: unexpected provider response.
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: provider_unavailable }
+    InternalError:
+      description: Relay failed (database, decryption…). Logged with the request id.
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: internal error }
+
+  schemas:
+    Provider:
+      type: string
+      enum: [google, microsoft]
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code.
+
+    QueryError:
+      type: object
+      required: [error, detail]
+      properties:
+        error: { type: string, const: invalid_query }
+        detail: { type: string }
+
+    Tenant:
+      type: object
+      required: [id, name, key_prefix]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        key_prefix:
+          type: string
+          description: Public, non-secret start of the key used, for logs and UIs.
+          examples: [rly_test_AbCdEfGh]
+
+    Account:
+      type: object
+      required: [id, provider, status, connected_at]
+      properties:
+        id: { type: string, format: uuid }
+        provider: { $ref: "#/components/schemas/Provider" }
+        email: { type: string, format: email }
+        status:
+          type: string
+          enum: [active, revoked, disconnected, error]
+        connected_at: { type: string, format: date-time }
+
+    AccountsPage:
+      type: object
+      required: [accounts]
+      properties:
+        accounts:
+          type: array
+          items: { $ref: "#/components/schemas/Account" }
+        next_cursor:
+          type: string
+          description: Absent on the last page.
+
+    Organizer:
+      type: object
+      properties:
+        email: { type: string }
+        name: { type: string }
+
+    Event:
+      type: object
+      required: [id, title, start, end, all_day, provider]
+      properties:
+        id: { type: string, description: The provider's event id. }
+        title: { type: string, description: Empty when the event has no title. }
+        start:
+          type: string
+          description: RFC 3339 for timed events (Outlook in UTC), `YYYY-MM-DD` for all-day events.
+          examples: ["2026-10-20T14:00:00Z", "2026-10-21"]
+        end:
+          type: string
+          description: Same format as `start`; exclusive for all-day events.
+        timezone:
+          type: string
+          description: IANA zone of a timed event (Outlook's Windows zones are mapped). Absent for all-day events or unknown zones.
+          examples: [America/Bogota]
+        all_day: { type: boolean }
+        location: { type: string }
+        organizer: { $ref: "#/components/schemas/Organizer" }
+        provider: { $ref: "#/components/schemas/Provider" }
+
+    EventsPage:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/Event" }
+        next_page_token:
+          type: string
+          description: Absent on the last page.
