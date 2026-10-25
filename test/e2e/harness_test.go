@@ -27,6 +27,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/queue"
 	"github.com/sebasBetancourt/relay/internal/store"
+	"github.com/sebasBetancourt/relay/internal/sync"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakegoogle"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakemicrosoft"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakeoauth"
@@ -71,6 +72,8 @@ type flow struct {
 	tenant      store.Tenant
 	nats        *queue.Client
 	webhookBase string
+	syncOn      bool
+	syncSvc     *sync.Service
 }
 
 // newFlow wires one API "replica" with both providers enabled, a fresh
@@ -191,6 +194,18 @@ func (f *flow) buildRouter(pool *pgxpool.Pool) http.Handler {
 		})
 		oauthSvc.UsePush(nsvc)
 		hooks = nsvc
+	}
+	if f.syncOn && f.nats != nil && pool == f.pool {
+		ss := sync.New(sync.Deps{
+			Log: discardLogger(), Accounts: accounts, Tokens: oauthSvc,
+			Store: store.NewSyncStore(pool), Publish: f.nats,
+			Sources: map[string]sync.DeltaSource{
+				"google":    &sync.Google{BaseURL: f.google.APIBaseURL(), HTTP: client},
+				"microsoft": &sync.Microsoft{BaseURL: f.ms.GraphBaseURL(), HTTP: client},
+			},
+		})
+		oauthSvc.UseSync(ss)
+		f.syncSvc = ss
 	}
 	return httpapi.NewRouter(httpapi.Deps{
 		Log: discardLogger(), DB: pool, Tenants: store.NewTenants(pool), Env: apikey.EnvTest,

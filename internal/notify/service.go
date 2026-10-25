@@ -13,9 +13,9 @@ import (
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
-// Subjects the webhook publishes. Sync jobs stay in the stream until the
-// delta-sync worker exists. Lifecycle jobs are consumed in this process,
-// because they renew a subscription rather than read the calendar.
+// Subjects the webhook publishes. Sync jobs are consumed by internal/sync.
+// Lifecycle jobs are consumed in this process, because they renew a
+// subscription rather than read the calendar.
 const (
 	SubjectSync      = "relay.sync.account"
 	SubjectLifecycle = "relay.notify.lifecycle"

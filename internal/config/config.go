@@ -67,7 +67,9 @@ type Config struct {
 	// NATSURL is required and the URL must be https, except loopback http
 	// used by local tests.
 	WebhookBaseURL string
-	NATSURL        string
+	// NATSURL enables the JetStream sync consumer. Required when
+	// WebhookBaseURL is set. Empty leaves delta sync off.
+	NATSURL string
 }
 
 // Load reads the environment and fails fast: every missing or invalid

@@ -26,6 +26,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/queue"
 	"github.com/sebasBetancourt/relay/internal/refresher"
 	"github.com/sebasBetancourt/relay/internal/store"
+	syncsvc "github.com/sebasBetancourt/relay/internal/sync"
 	"github.com/sebasBetancourt/relay/internal/vault"
 )
 
@@ -88,15 +89,18 @@ func main() {
 	var (
 		natsClient *queue.Client
 		notifySvc  *notify.Service
+		syncSvc    *syncsvc.Service
 	)
-	if cfg.WebhookBaseURL == "" {
-		log.Info("calendar push disabled", "reason", "WEBHOOK_BASE_URL is unset; staying on polling")
-	} else {
+	if cfg.NATSURL != "" {
 		natsClient, err = queue.Connect(context.Background(), cfg.NATSURL)
 		if err != nil {
 			log.Error("nats connect failed", "err", err)
 			os.Exit(1)
 		}
+	}
+	if cfg.WebhookBaseURL == "" {
+		log.Info("calendar push disabled", "reason", "WEBHOOK_BASE_URL is unset; staying on polling")
+	} else {
 		notifyHTTP := &http.Client{Timeout: 20 * time.Second}
 		pushProviders := map[string]notify.Provider{}
 		if cfg.Google != nil {
@@ -112,6 +116,23 @@ func main() {
 		})
 		oauthSvc.UsePush(notifySvc)
 		log.Info("calendar push enabled", "base_url", cfg.WebhookBaseURL)
+	}
+	if natsClient == nil {
+		log.Info("delta sync disabled", "reason", "NATS_URL is unset; events stay on demand")
+	} else {
+		sources := map[string]syncsvc.DeltaSource{}
+		if cfg.Google != nil {
+			sources["google"] = syncsvc.NewGoogle(apiHTTP)
+		}
+		if cfg.Microsoft != nil {
+			sources["microsoft"] = syncsvc.NewMicrosoft(apiHTTP)
+		}
+		syncSvc = syncsvc.New(syncsvc.Deps{
+			Log: log, Accounts: accounts, Tokens: oauthSvc,
+			Store: store.NewSyncStore(pool), Sources: sources, Publish: natsClient,
+		})
+		oauthSvc.UseSync(syncSvc)
+		log.Info("delta sync enabled")
 	}
 
 	deps := httpapi.Deps{
@@ -147,6 +168,9 @@ func main() {
 	if notifySvc != nil {
 		wg.Add(2)
 	}
+	if syncSvc != nil {
+		wg.Add(2)
+	}
 	go func() {
 		defer wg.Done()
 		janitor.Run(bgCtx, janitor.Config{
@@ -180,6 +204,20 @@ func main() {
 				return notifySvc.HandleLifecycle(ctx, job.AccountID, job.Action)
 			}); err != nil && bgCtx.Err() == nil {
 				log.Error("subscription lifecycle consumer stopped", "err", err)
+			}
+		}()
+	}
+	if syncSvc != nil {
+		go func() {
+			defer wg.Done()
+			syncsvc.Run(bgCtx, syncsvc.ScheduleConfig{
+				Log: log, Claims: store.NewSyncStore(pool), Publish: natsClient,
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			if err := natsClient.RunSync(bgCtx, notify.SubjectSync, syncSvc.Sync); err != nil && bgCtx.Err() == nil {
+				log.Error("calendar sync consumer stopped", "err", err)
 			}
 		}()
 	}

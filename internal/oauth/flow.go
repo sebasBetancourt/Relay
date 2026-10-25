@@ -71,6 +71,12 @@ type CalendarPush interface {
 	Stop(ctx context.Context, accountID string) error
 }
 
+// SyncKick enqueues the first delta sync after connect. Nil skips it.
+// A failure leaves the account connected; the periodic pass retries.
+type SyncKick interface {
+	Kick(ctx context.Context, accountID string) error
+}
+
 // Cipher is the vault surface (*vault.Vault implements it).
 type Cipher interface {
 	Encrypt(plaintext, aad []byte) (ciphertext, nonce []byte, err error)
@@ -87,6 +93,8 @@ type Deps struct {
 	Log        *slog.Logger
 	// Push is optional. When set, Finish subscribes and Disconnect stops.
 	Push CalendarPush
+	// Sync is optional. When set, Finish enqueues the first delta sync.
+	Sync SyncKick
 }
 
 type Service struct {
@@ -98,6 +106,7 @@ type Service struct {
 	log       *slog.Logger
 	flight    singleflight.Group
 	push      CalendarPush
+	sync      SyncKick
 }
 
 // NewService wires the OAuth service. HTTPClient must have a Timeout.
@@ -114,11 +123,15 @@ func NewService(d Deps) *Service {
 		http:      d.HTTPClient,
 		log:       log,
 		push:      d.Push,
+		sync:      d.Sync,
 	}
 }
 
 // UsePush sets the calendar push hook. main calls it after both services exist.
 func (s *Service) UsePush(p CalendarPush) { s.push = p }
+
+// UseSync sets the delta-sync hook. main calls it after both services exist.
+func (s *Service) UseSync(k SyncKick) { s.sync = k }
 
 // Result is returned after a successful Finish.
 type Result struct {
@@ -236,6 +249,12 @@ func (s *Service) Finish(ctx context.Context, provider Provider, state, code, pr
 		// A failure leaves the account connected. The renewal worker retries.
 		if err := s.push.Subscribe(context.WithoutCancel(ctx), accountID); err != nil {
 			s.log.Warn("calendar subscribe failed", "account_id", accountID, "provider", string(provider), "err", err)
+		}
+	}
+	if s.sync != nil {
+		// Enqueue only. The callback must not wait on a full calendar read.
+		if err := s.sync.Kick(context.WithoutCancel(ctx), accountID); err != nil {
+			s.log.Warn("calendar sync enqueue failed", "account_id", accountID, "provider", string(provider), "err", err)
 		}
 	}
 
