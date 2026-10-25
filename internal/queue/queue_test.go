@@ -39,3 +39,33 @@ func TestPublishDedupesOnMsgID(t *testing.T) {
 		t.Fatalf("collected %#v", got)
 	}
 }
+
+func TestRunSyncDeliversAccount(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c, err := Connect(ctx, natsjs.Start(t), WithMemory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+
+	const subject = "relay.sync.account"
+	if err := c.Publish(ctx, subject, "job-1", []byte(`{"account_id":"acct-9"}`)); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan string, 1)
+	go func() {
+		_ = c.RunSync(ctx, subject, func(_ context.Context, id string) error {
+			got <- id
+			return nil
+		})
+	}()
+	select {
+	case id := <-got:
+		if id != "acct-9" {
+			t.Fatalf("id = %q", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("sync consumer did not deliver")
+	}
+}

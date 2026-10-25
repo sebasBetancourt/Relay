@@ -91,8 +91,7 @@ func (c *Client) Publish(ctx context.Context, subject, msgID string, body []byte
 	return nil
 }
 
-// Lifecycle is a subscription maintenance job. Sync jobs are a different
-// subject and are left in the stream for the delta-sync worker.
+// Lifecycle is a subscription maintenance job. Sync jobs use RunSync.
 type Lifecycle struct {
 	AccountID string `json:"account_id"`
 	Action    string `json:"action"`
@@ -129,6 +128,47 @@ func (c *Client) RunLifecycle(ctx context.Context, subject string, handle func(c
 	})
 	if err != nil {
 		return fmt.Errorf("lifecycle consume: %w", err)
+	}
+	defer cc.Stop()
+	<-ctx.Done()
+	return nil
+}
+
+// RunSync consumes relay.sync.account until ctx is cancelled. handle is
+// one account's delta sync. Errors are nak'd so JetStream redelivers.
+// A cancelled account returns nil from handle and is acked.
+func (c *Client) RunSync(ctx context.Context, subject string, handle func(context.Context, string) error) error {
+	cons, err := c.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:       "calendar-sync",
+		FilterSubject: subject,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		AckWait:       2 * time.Minute,
+		MaxDeliver:    8,
+		MaxAckPending: 8,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		return fmt.Errorf("sync consumer: %w", err)
+	}
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		var job struct {
+			AccountID string `json:"account_id"`
+		}
+		if err := json.Unmarshal(msg.Data(), &job); err != nil || job.AccountID == "" {
+			_ = msg.Ack()
+			return
+		}
+		hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+		err := handle(hctx, job.AccountID)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			_ = msg.Nak()
+			return
+		}
+		_ = msg.Ack()
+	})
+	if err != nil {
+		return fmt.Errorf("sync consume: %w", err)
 	}
 	defer cc.Stop()
 	<-ctx.Done()
