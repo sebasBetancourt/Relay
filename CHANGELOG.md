@@ -9,6 +9,7 @@ All notable changes to Relay are documented here. The format follows
 ### Added
 
 - Background refresher renews access tokens before they expire (`REFRESH_AHEAD`, `REFRESH_CONCURRENCY`). Replica safety stays on the Postgres row lock; batches are claimed with `FOR UPDATE SKIP LOCKED` ([ADR 0006](docs/adr/0006-background-refresh.md)).
+- Calendar push: connecting an account subscribes to a Google watch channel or a Microsoft Graph subscription. Public webhooks verify a per-subscription secret, enqueue `relay.sync.account` on NATS JetStream and answer inside Graph's 3 second window. A worker renews subscriptions that expire within 24 hours. Push stays off when `WEBHOOK_BASE_URL` is unset ([ADR 0007](docs/adr/0007-calendar-push.md)).
 
 ## [0.1.0] - 2026-10-20
 

@@ -33,6 +33,7 @@ curl -H "Authorization: Bearer $RELAY_KEY" \
 | Silent token refresh | ✅ | ✅ (rotating refresh tokens, safe across replicas) |
 | Detect revoked access (`409`, reconnect) | ✅ | ✅ (including MFA / Conditional Access) |
 | Disconnect an account | ✅ (token revoked at Google) | ✅ |
+| Push when a calendar changes (optional) | ✅ watch channel | ✅ Graph subscription |
 
 - **Secure by default.**
   - OAuth tokens are encrypted with AES-256-GCM, each value bound to its tenant, account and column.
@@ -115,7 +116,7 @@ Prefer prebuilt artifacts? Each [release](https://github.com/sebasBetancourt/Rel
 
 ## API
 
-All `/v1` routes except the OAuth callback take `Authorization: Bearer <api key>`.
+All `/v1` routes except the OAuth callback and the webhook endpoints take `Authorization: Bearer <api key>`. Webhooks are off unless `WEBHOOK_BASE_URL` is set.
 
 | Method | Path | What it does |
 | --- | --- | --- |
@@ -125,6 +126,9 @@ All `/v1` routes except the OAuth callback take `Authorization: Bearer <api key>
 | `DELETE` | `/v1/accounts/{id}` | Disconnect an account |
 | `GET` | `/v1/calendars/{id}/events` | List events, normalized across providers |
 | `GET` | `/v1/me` | The tenant behind the API key |
+| `POST` | `/v1/webhooks/google` | Google push notification (public; no API key) |
+| `POST` | `/v1/webhooks/microsoft` | Graph notification, or the `validationToken` handshake |
+| `POST` | `/v1/webhooks/microsoft/lifecycle` | Graph subscription lifecycle (renew, resubscribe, missed) |
 | `GET` | `/healthz`, `/readyz` | Liveness and readiness probes |
 
 - **[API guide](docs/api.md)**: every endpoint with `curl` examples, paging and the full error table.
@@ -144,6 +148,8 @@ Set through environment variables (see [`.env.example`](.env.example)). The API 
 | `MICROSOFT_TENANT_ID` | no | `common` (default), `organizations`, `consumers` or a directory |
 | `MICROSOFT_EXPIRATION_DATE` | no | Client secret expiry (`YYYY-MM-DD`): warns 30 days before, refuses to start after |
 | `PORT`, `LOG_LEVEL` | no | `8080`, `info` |
+| `WEBHOOK_BASE_URL` | no | Public `https` origin for calendar push. Empty keeps polling |
+| `NATS_URL` | with webhooks | JetStream, for example `nats://nats:4222` |
 
 ## Documentation
 

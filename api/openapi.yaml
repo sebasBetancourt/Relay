@@ -8,10 +8,13 @@ info:
     accounts once, keeps their OAuth tokens encrypted and fresh, and serves
     their calendar events in one normalized shape.
 
-    **Authentication.** Every `/v1` route except the OAuth callback requires
-    `Authorization: Bearer <api key>`. Keys look like `rly_live_…` or
-    `rly_test_…` and are issued with `relayctl tenant create`. Any key problem
-    answers the same `401 {"error":"unauthorized"}`.
+    **Authentication.** Every `/v1` route except the OAuth callback and the
+    provider webhook endpoints requires `Authorization: Bearer <api key>`.
+    Keys look like `rly_live_…` or `rly_test_…` and are issued with
+    `relayctl tenant create`. Any key problem answers the same
+    `401 {"error":"unauthorized"}`. Webhooks are public; each subscription
+    has its own secret (Google channel token, Graph `clientState`), checked
+    in constant time. A wrong secret is `401` and is not enqueued.
 
     **Tenancy.** Everything is scoped to the tenant that owns the key. An
     account of another tenant is indistinguishable from one that does not
@@ -41,6 +44,12 @@ tags:
     description: The tenant's connected provider accounts.
   - name: Events
     description: Calendar events, normalized across providers.
+  - name: Webhooks
+    description: |
+      Public push endpoints. Google and Microsoft call these when a calendar
+      changes. Relay verifies the per-subscription secret, enqueues a sync
+      job and responds without calling the provider. Absent when
+      `WEBHOOK_BASE_URL` is unset.
 
 paths:
   /healthz:
@@ -201,6 +210,139 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
         "502": { $ref: "#/components/responses/ProviderError" }
+
+  /v1/webhooks/google:
+    post:
+      tags: [Webhooks]
+      operationId: googleWebhook
+      summary: Google Calendar push notification
+      description: |
+        Public. Google sends `X-Goog-Channel-Token`, which Relay compares to
+        the stored hash in constant time. `X-Goog-Resource-State: sync` is the
+        initial confirmation and is ignored (`200`, nothing queued). Any other
+        state enqueues `relay.sync.account` and answers `202`. An unknown
+        channel is `200` and is not queued. Relay does not call Google in this
+        request.
+      security: []
+      parameters:
+        - { name: X-Goog-Channel-ID, in: header, required: true, schema: { type: string } }
+        - { name: X-Goog-Channel-Token, in: header, required: true, schema: { type: string } }
+        - { name: X-Goog-Resource-State, in: header, required: true, schema: { type: string, enum: [sync, exists, not_exists] } }
+        - { name: X-Goog-Message-Number, in: header, schema: { type: string } }
+      responses:
+        "200":
+          description: Sync confirmation, or a channel Relay does not know. Nothing queued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "202":
+          description: A sync job was enqueued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "401":
+          description: The channel token does not match. Nothing queued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: The body exceeds 64 KiB.
+        "429":
+          description: Too many requests from this address.
+        "503":
+          description: The job could not be enqueued. The provider should retry.
+
+  /v1/webhooks/microsoft:
+    post:
+      tags: [Webhooks]
+      operationId: microsoftWebhook
+      summary: Microsoft Graph change notification
+      description: |
+        Public. While a subscription is being created, Graph calls this URL
+        with `validationToken`. Relay answers `200` `text/plain` with that
+        token, decoded, and nothing else. Otherwise each item's `clientState`
+        is compared to the stored hash in constant time. One sync job is
+        enqueued per account (`202`). A bad `clientState` is `401` and
+        nothing is queued. Relay does not call Graph in this request.
+      security: []
+      parameters:
+        - { name: validationToken, in: query, schema: { type: string }, description: Present only for the subscription handshake. }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      subscriptionId: { type: string }
+                      clientState: { type: string }
+                      changeType: { type: string }
+                      resource: { type: string }
+      responses:
+        "200":
+          description: |
+            Handshake: `text/plain` body is exactly the decoded `validationToken`.
+            Or every notification was for an unknown subscription.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            text/plain:
+              schema: { type: string }
+        "202":
+          description: At least one sync job was enqueued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "401":
+          description: A `clientState` does not match. Nothing queued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: The body exceeds 64 KiB.
+        "429":
+          description: Too many requests from this address.
+        "503":
+          description: The job could not be enqueued. Graph should retry.
+
+  /v1/webhooks/microsoft/lifecycle:
+    post:
+      tags: [Webhooks]
+      operationId: microsoftLifecycleWebhook
+      summary: Microsoft Graph subscription lifecycle notification
+      description: |
+        Public. `reauthorizationRequired` enqueues a renew,
+        `subscriptionRemoved` enqueues a new subscription, and `missed`
+        enqueues a sync. The provider is not called in this request.
+        The same `validationToken` handshake as `/v1/webhooks/microsoft` applies.
+      security: []
+      parameters:
+        - { name: validationToken, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Handshake, or nothing to enqueue.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "202":
+          description: A renew, resubscribe or sync job was enqueued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "401":
+          description: A `clientState` does not match. Nothing queued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "413":
+          description: The body exceeds 64 KiB.
+        "429":
+          description: Too many requests from this address.
+        "503":
+          description: The job could not be enqueued.
 
   /v1/accounts:
     get:
