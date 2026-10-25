@@ -18,11 +18,15 @@ import (
 // disconnectFake returns prev from Disconnect, as the store would.
 type disconnectFake struct {
 	fakeAccounts
-	prev store.StoredAccount
-	err  error
+	prev         store.StoredAccount
+	err          error
+	onDisconnect func()
 }
 
 func (f *disconnectFake) Disconnect(context.Context, string, string) (store.StoredAccount, error) {
+	if f.onDisconnect != nil {
+		f.onDisconnect()
+	}
 	return f.prev, f.err
 }
 
@@ -152,6 +156,31 @@ func TestGoogleRevoke(t *testing.T) {
 				t.Fatalf("request form = %v type = %q", gotForm, gotType)
 			}
 		})
+	}
+}
+
+type orderPush struct{ seq *[]string }
+
+func (p orderPush) Subscribe(context.Context, string) error { return nil }
+func (p orderPush) Stop(context.Context, string) error {
+	*p.seq = append(*p.seq, "stop")
+	return errors.New("provider down")
+}
+
+func TestDisconnectStopsSubscriptionBeforeDeletingTokens(t *testing.T) {
+	var seq []string
+	fake := &disconnectFake{
+		prev:         seedActiveAccount(t, testVault(t), time.Now().Add(time.Hour)),
+		onDisconnect: func() { seq = append(seq, "db") },
+	}
+	svc := disconnectService(t, fake, ProviderGoogle, func(context.Context, *http.Client, string) error { return nil })
+	svc.UsePush(orderPush{seq: &seq})
+
+	if err := svc.Disconnect(context.Background(), "tenant-1", "acct-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(seq) != 2 || seq[0] != "stop" || seq[1] != "db" {
+		t.Fatalf("order = %v, want stop then db", seq)
 	}
 }
 

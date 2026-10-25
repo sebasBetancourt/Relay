@@ -12,6 +12,39 @@ import (
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
+type webhookStub struct{ paths []string }
+
+func (s *webhookStub) Google(w http.ResponseWriter, _ *http.Request) {
+	s.paths = append(s.paths, "google")
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *webhookStub) Microsoft(w http.ResponseWriter, _ *http.Request) {
+	s.paths = append(s.paths, "microsoft")
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *webhookStub) MicrosoftLifecycle(w http.ResponseWriter, _ *http.Request) {
+	s.paths = append(s.paths, "lifecycle")
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func TestWebhooksArePublic(t *testing.T) {
+	stub := &webhookStub{}
+	router := NewRouter(Deps{Log: discardLogger(), Env: apikey.EnvTest, Webhooks: stub})
+	for _, path := range []string{"/v1/webhooks/google", "/v1/webhooks/microsoft", "/v1/webhooks/microsoft/lifecycle"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("%s status = %d, want 202", path, rec.Code)
+		}
+	}
+	if got := len(stub.paths); got != 3 || stub.paths[2] != "lifecycle" {
+		t.Fatalf("handlers = %v", stub.paths)
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := NewRouter(Deps{Log: log, Env: apikey.EnvTest}) // healthz no usa la DB ni el store

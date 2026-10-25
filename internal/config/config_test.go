@@ -23,6 +23,7 @@ func setValidEnv(t *testing.T) {
 	for _, k := range []string{
 		"MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET", "MICROSOFT_REDIRECT_URL", "MICROSOFT_TENANT_ID", "MICROSOFT_EXPIRATION_DATE",
 		"REFRESH_AHEAD", "REFRESH_CONCURRENCY",
+		"WEBHOOK_BASE_URL", "NATS_URL",
 	} {
 		t.Setenv(k, "")
 	}
@@ -64,6 +65,22 @@ func TestLoadValid(t *testing.T) {
 	if cfg.RefreshAhead != 10*time.Minute || cfg.RefreshConcurrency != 8 {
 		t.Fatalf("refresh defaults = %s / %d", cfg.RefreshAhead, cfg.RefreshConcurrency)
 	}
+	if cfg.WebhookBaseURL != "" || cfg.NATSURL != "" {
+		t.Fatalf("push should default off, base %q nats %q", cfg.WebhookBaseURL, cfg.NATSURL)
+	}
+}
+
+func TestLoadWebhookLoopback(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("WEBHOOK_BASE_URL", "http://127.0.0.1:8080/")
+	t.Setenv("NATS_URL", "nats://127.0.0.1:4222")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebhookBaseURL != "http://127.0.0.1:8080" || cfg.NATSURL != "nats://127.0.0.1:4222" {
+		t.Fatalf("base %q nats %q", cfg.WebhookBaseURL, cfg.NATSURL)
+	}
 }
 
 func TestLoadInvalid(t *testing.T) {
@@ -88,6 +105,8 @@ func TestLoadInvalid(t *testing.T) {
 		{"refresh ahead not a duration", "REFRESH_AHEAD", "soon", "REFRESH_AHEAD"},
 		{"refresh ahead zero", "REFRESH_AHEAD", "0s", "REFRESH_AHEAD"},
 		{"refresh concurrency zero", "REFRESH_CONCURRENCY", "0", "REFRESH_CONCURRENCY"},
+		{"public http webhook", "WEBHOOK_BASE_URL", "http://example.com", "must be https"},
+		{"webhook without nats", "WEBHOOK_BASE_URL", "https://relay.example", "NATS_URL is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

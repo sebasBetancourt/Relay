@@ -184,6 +184,37 @@ func TestFinishExchangeSendsPKCEAndNoState(t *testing.T) {
 	}
 }
 
+type failPush struct{ calls int }
+
+func (p *failPush) Subscribe(context.Context, string) error {
+	p.calls++
+	return errors.New("watch failed")
+}
+func (p *failPush) Stop(context.Context, string) error { return nil }
+
+func TestFinishSubscribeFailureStillConnects(t *testing.T) {
+	_, spec := startFakeGoogle(t, func(w http.ResponseWriter, r *http.Request) {
+		idTok := makeIDToken(t, "client-123", "https://accounts.google.com", "sub-99", time.Now().Add(time.Hour))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "access-plain", "refresh_token": "refresh-plain",
+			"token_type": "Bearer", "expires_in": 3600,
+			"scope":    GoogleOpenID + " " + GoogleCalendarReadonly,
+			"id_token": idTok,
+		})
+	})
+	states := &fakeStates{consume: map[string]store.ConsumedState{
+		"google:st1": {TenantID: "tenant-1", CodeVerifier: "verifier-abc"},
+	}}
+	svc, _ := newFinishService(t, states, &fakeAccounts{}, spec)
+	push := &failPush{}
+	svc.UsePush(push)
+
+	res, err := svc.Finish(context.Background(), ProviderGoogle, "st1", "auth-code", "")
+	if err != nil || res.AccountID == "" || push.calls != 1 {
+		t.Fatalf("result %+v err %v calls %d", res, err, push.calls)
+	}
+}
+
 func TestFinishAccessDeniedConsumesState(t *testing.T) {
 	called := false
 	_, spec := startFakeGoogle(t, func(w http.ResponseWriter, r *http.Request) {

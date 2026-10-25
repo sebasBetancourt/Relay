@@ -174,6 +174,8 @@ sequenceDiagram
    | `organizer` | Optional object `{"email","name"}` |
    | `provider` | `google` or `microsoft` |
 
+Push (optional, `WEBHOOK_BASE_URL`) does not replace this read. On connect, Relay creates a Google watch channel or a Graph subscription and stores only a hash of its secret. The public webhook verifies that secret, enqueues `relay.sync.account` and returns; it does not call the provider and it does not apply the change. A worker renews subscriptions that expire within 24 hours (`FOR UPDATE SKIP LOCKED`). Graph caps `me/events` at 10,080 minutes, so a missed notification still needs periodic delta sync ([ADR 0007](adr/0007-calendar-push.md)).
+
 ### Data model
 
 #### tenants
@@ -231,6 +233,20 @@ A tenant has **N** connected accounts (Google and Microsoft are separate rows). 
 | `scopes` | `text[]` | Scopes the user **actually** granted (may be fewer than requested), e.g. `{calendar.readonly}`. |
 | `updated_at` | `timestamptz` | Updated on every refresh (Microsoft rotates refresh every time). |
 
+#### provider_subscriptions
+
+One push registration per connected account. The channel token / `clientState` is stored only as `secret_hash`.
+
+| column | type | notes |
+| --- | --- | --- |
+| `id` | `uuid` | PK |
+| `account_id` | `uuid` | **Unique** FK → `connected_accounts(id)` **ON DELETE CASCADE** |
+| `provider` | `enum` | `google` or `microsoft` |
+| `external_id` | `text` | Google channel id or Graph subscription id. Unique per provider |
+| `resource_id` | `text` | Google `resourceId`, required by `channels.stop`. Empty for Graph |
+| `secret_hash` | `text` | Hex SHA-256 of the channel token or `clientState` |
+| `expires_at` | `timestamptz` | When the provider drops the subscription. The renewer uses Postgres `now()` |
+
 #### oauth_states
 
 Short-lived rows from connect step 1 (~10 min). Used only until callback.
@@ -253,6 +269,7 @@ Short-lived rows from connect step 1 (~10 min). Used only until callback.
 | `api_keys.tenant_id` | `tenants.id` | **CASCADE** |
 | `connected_accounts.tenant_id` | `tenants.id` | **CASCADE** |
 | `oauth_tokens.account_id` | `connected_accounts.id` | **CASCADE** |
+| `provider_subscriptions.account_id` | `connected_accounts.id` | **CASCADE** |
 | `oauth_states.tenant_id` | `tenants.id` | **CASCADE** |
 
 

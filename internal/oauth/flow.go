@@ -62,6 +62,15 @@ type AccountStore interface {
 	Disconnect(ctx context.Context, accountID, tenantID string) (store.StoredAccount, error)
 }
 
+// CalendarPush subscribes a connected account to provider change
+// notifications and removes that subscription. Nil disables push.
+// Both calls are best effort: the connect and the disconnect succeed
+// even when the provider is down.
+type CalendarPush interface {
+	Subscribe(ctx context.Context, accountID string) error
+	Stop(ctx context.Context, accountID string) error
+}
+
 // Cipher is the vault surface (*vault.Vault implements it).
 type Cipher interface {
 	Encrypt(plaintext, aad []byte) (ciphertext, nonce []byte, err error)
@@ -76,6 +85,8 @@ type Deps struct {
 	Providers  map[Provider]ProviderSpec
 	HTTPClient *http.Client // timeout required; oauth2 defaults to http.DefaultClient (no timeout)
 	Log        *slog.Logger
+	// Push is optional. When set, Finish subscribes and Disconnect stops.
+	Push CalendarPush
 }
 
 type Service struct {
@@ -86,6 +97,7 @@ type Service struct {
 	http      *http.Client
 	log       *slog.Logger
 	flight    singleflight.Group
+	push      CalendarPush
 }
 
 // NewService wires the OAuth service. HTTPClient must have a Timeout.
@@ -101,8 +113,12 @@ func NewService(d Deps) *Service {
 		providers: maps.Clone(d.Providers),
 		http:      d.HTTPClient,
 		log:       log,
+		push:      d.Push,
 	}
 }
+
+// UsePush sets the calendar push hook. main calls it after both services exist.
+func (s *Service) UsePush(p CalendarPush) { s.push = p }
 
 // Result is returned after a successful Finish.
 type Result struct {
@@ -213,6 +229,14 @@ func (s *Service) Finish(ctx context.Context, provider Provider, state, code, pr
 	})
 	if err != nil {
 		return Result{}, err
+	}
+
+	if s.push != nil {
+		// The browser may give up on the callback; still try to subscribe.
+		// A failure leaves the account connected. The renewal worker retries.
+		if err := s.push.Subscribe(context.WithoutCancel(ctx), accountID); err != nil {
+			s.log.Warn("calendar subscribe failed", "account_id", accountID, "provider", string(provider), "err", err)
+		}
 	}
 
 	return Result{AccountID: accountID, Provider: provider, Email: ident.Email}, nil
