@@ -63,17 +63,21 @@ type Calls = fakeoauth.Calls
 // Server is a fake Entra ID + Microsoft Graph.
 type Server struct {
 	*fakeoauth.Core
-	opts    Options
-	srv     *httptest.Server
-	mu      sync.Mutex
-	events  []Event
-	noBox   bool
-	meN     atomic.Int64
-	subs    map[string]GraphSub
-	subN    atomic.Int64
-	patchN  atomic.Int64
-	deleteN atomic.Int64
-	lastSub GraphSub
+	opts      Options
+	srv       *httptest.Server
+	mu        sync.Mutex
+	events    []Event
+	noBox     bool
+	meN       atomic.Int64
+	subs      map[string]GraphSub
+	subN      atomic.Int64
+	patchN    atomic.Int64
+	deleteN   atomic.Int64
+	lastSub   GraphSub
+	deltaSnap map[string]Event
+	deltaTok  string
+	deltaGone bool
+	lastDelta string
 }
 
 // New starts the fake server. Closed via t.Cleanup.
@@ -130,6 +134,7 @@ func New(t *testing.T, opts Options) *Server {
 	mux.HandleFunc(base+"/token", m.HandleToken)
 	mux.HandleFunc("GET /v1.0/me", m.handleMe)
 	mux.HandleFunc("GET /v1.0/me/calendarView", m.handleCalendarView)
+	mux.HandleFunc("GET /v1.0/me/calendarView/delta", m.handleDelta)
 	mux.HandleFunc("POST /v1.0/subscriptions", m.handleCreateSub)
 	mux.HandleFunc("PATCH /v1.0/subscriptions/{id}", m.handlePatchSub)
 	mux.HandleFunc("DELETE /v1.0/subscriptions/{id}", m.handleDeleteSub)
@@ -274,6 +279,7 @@ func graphEvent(e Event) map[string]any {
 	}
 	out := map[string]any{
 		"id":                    e.ID,
+		"changeKey":             changeKey(e),
 		"subject":               e.Subject,
 		"isAllDay":              e.AllDay,
 		"isCancelled":           e.Cancelled,
@@ -288,6 +294,120 @@ func graphEvent(e Event) map[string]any {
 		}
 	}
 	return out
+}
+
+func changeKey(e Event) string {
+	return fmt.Sprintf("%s|%s|%s|%t", e.ID, e.Subject, e.Start.UTC().Format(time.RFC3339Nano), e.Cancelled)
+}
+
+// ExpireDelta makes the next incremental delta answer 410.
+func (m *Server) ExpireDelta() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deltaGone = true
+}
+
+// LastDeltaURL is the path and query of the last delta request.
+func (m *Server) LastDeltaURL() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastDelta
+}
+
+func (m *Server) handleDelta(w http.ResponseWriter, r *http.Request) {
+	m.CountEvents()
+	if m.TakeFail("delta", w) {
+		return
+	}
+	if !m.AccessOK(r) {
+		writeGraphError(w, http.StatusUnauthorized, "InvalidAuthenticationToken")
+		return
+	}
+	q := r.URL.Query()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastDelta = r.URL.RequestURI()
+
+	if tok := q.Get("$deltatoken"); tok != "" {
+		if m.deltaGone || tok != m.deltaTok {
+			m.deltaGone = false
+			writeGraphError(w, http.StatusGone, "SyncStateNotFound")
+			return
+		}
+		m.writeDelta(w, m.diffDelta())
+		return
+	}
+	start, err1 := time.Parse(time.RFC3339, q.Get("startDateTime"))
+	end, err2 := time.Parse(time.RFC3339, q.Get("endDateTime"))
+	if err1 != nil || err2 != nil {
+		writeGraphError(w, http.StatusBadRequest, "ErrorInvalidParameter")
+		return
+	}
+	var window []Event
+	for _, e := range m.events {
+		if e.Cancelled {
+			continue
+		}
+		if e.Start.Before(end) && e.End.After(start) {
+			window = append(window, e)
+		}
+	}
+	m.writeDelta(w, window)
+}
+
+func (m *Server) diffDelta() []Event {
+	live := map[string]Event{}
+	for _, e := range m.events {
+		if !e.Cancelled {
+			live[e.ID] = e
+		}
+	}
+	var out []Event
+	for id, old := range m.deltaSnap {
+		cur, ok := live[id]
+		if !ok {
+			old.Cancelled = true
+			out = append(out, old)
+			continue
+		}
+		if changeKey(cur) != changeKey(old) {
+			out = append(out, cur)
+		}
+		delete(live, id)
+	}
+	for _, e := range live {
+		out = append(out, e)
+	}
+	return out
+}
+
+func (m *Server) writeDelta(w http.ResponseWriter, items []Event) {
+	values := make([]any, 0, len(items))
+	for _, e := range items {
+		if e.Cancelled {
+			values = append(values, map[string]any{
+				"id":       e.ID,
+				"@removed": map[string]string{"reason": "deleted"},
+			})
+			continue
+		}
+		values = append(values, graphEvent(e))
+	}
+	token := fmt.Sprintf("delta-%d", time.Now().UnixNano())
+	m.deltaTok = token
+	m.deltaGone = false
+	m.deltaSnap = map[string]Event{}
+	for _, e := range m.events {
+		if !e.Cancelled {
+			m.deltaSnap[e.ID] = e
+		}
+	}
+	link := m.srv.URL + "/v1.0/me/calendarView/delta?$deltatoken=" + token
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"value":            values,
+		"@odata.deltaLink": link,
+	})
 }
 
 // GraphSub is a subscription the fake accepted.
