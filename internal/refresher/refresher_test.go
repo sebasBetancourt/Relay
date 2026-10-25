@@ -50,7 +50,7 @@ type fakeRefresh struct {
 	started  atomic.Int32
 }
 
-func (f *fakeRefresh) RefreshAccount(ctx context.Context, id string) error {
+func (f *fakeRefresh) RefreshAccount(ctx context.Context, id string, _ time.Duration) error {
 	n := f.inFlight.Add(1)
 	for {
 		old := f.max.Load()

@@ -13,6 +13,7 @@ A process in the API (`internal/refresher`) renews tokens that expire within `RE
 
 - Each cycle claims one batch with `FOR UPDATE SKIP LOCKED`, ordered by `expires_at`, so two replicas do not take the same row.
 - The provider call goes through the existing `oauth.Service` refresh, including the row lock. The claim transaction commits before that call, so the two locks never nest.
+- Under that lock the worker re-reads `expires_at`. If the token now lasts longer than `REFRESH_AHEAD` (a previous refresh already stored it), it leaves the row alone. Two `RefreshAccount` calls in a row therefore hit the provider once.
 - Redis is not used. If a second replica still races a lazy refresh, the row lock is what prevents a double Microsoft rotation. A cache outage must not stop renewal or sign users out.
 
 ## Consequences

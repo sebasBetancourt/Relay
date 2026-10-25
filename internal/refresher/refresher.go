@@ -36,7 +36,7 @@ type Claimer interface {
 
 // AccountRefresher renews one account. *oauth.Service implements it.
 type AccountRefresher interface {
-	RefreshAccount(ctx context.Context, accountID string) error
+	RefreshAccount(ctx context.Context, accountID string, ahead time.Duration) error
 }
 
 // Config for Run.
@@ -141,7 +141,7 @@ func cycle(ctx context.Context, log *slog.Logger, claim Claimer, refresh Account
 			if ctx.Err() != nil {
 				return nil
 			}
-			err := refresh.RefreshAccount(ctx, id)
+			err := refresh.RefreshAccount(ctx, id, ahead)
 			switch {
 			case err == nil:
 				out <- kindRefreshed

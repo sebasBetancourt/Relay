@@ -45,13 +45,37 @@ func TestRefresherRacesLazyRequestOnce(t *testing.T) {
 	}
 }
 
+// Two RefreshAccount calls on the same account: the first rotates, the
+// second sees an expiry past ahead under the row lock and does not.
+func TestRefreshAccountTwiceRefreshesOnce(t *testing.T) {
+	f := newFlow(t)
+	accountID := f.connectThrough("microsoft")
+	f.ms.ExpireAccessTokens()
+	f.expireInDB(accountID)
+	before := f.ms.Calls().Refresh
+
+	ahead := 10 * time.Minute
+	if err := f.svc.RefreshAccount(context.Background(), accountID, ahead); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.RefreshAccount(context.Background(), accountID, ahead); err != nil {
+		t.Fatal(err)
+	}
+	if d := f.ms.Calls().Refresh - before; d != 1 {
+		t.Fatalf("refreshes = %d, want exactly 1", d)
+	}
+	if f.row(accountID).Status != "active" {
+		t.Fatal("the account must stay active")
+	}
+}
+
 func TestRefresherRevokesInvalidGrant(t *testing.T) {
 	f := newFlow(t)
 	accountID := f.connectThrough("microsoft")
 	f.ms.FailNextRefresh("invalid_grant")
 	f.expireInDB(accountID)
 
-	err := f.svc.RefreshAccount(context.Background(), accountID)
+	err := f.svc.RefreshAccount(context.Background(), accountID, 10*time.Minute)
 	if err == nil {
 		t.Fatal("expected revocation")
 	}
@@ -66,7 +90,7 @@ func TestRefresherLeavesAccountOnProvider5xx(t *testing.T) {
 	f.ms.FailNext("token", http.StatusInternalServerError)
 	f.expireInDB(accountID)
 
-	err := f.svc.RefreshAccount(context.Background(), accountID)
+	err := f.svc.RefreshAccount(context.Background(), accountID, 10*time.Minute)
 	if err == nil {
 		t.Fatal("expected provider error")
 	}
@@ -82,7 +106,7 @@ func TestRefresherSkipsDisconnected(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := f.ms.Calls().Refresh
-	err := f.svc.RefreshAccount(context.Background(), accountID)
+	err := f.svc.RefreshAccount(context.Background(), accountID, 10*time.Minute)
 	if err == nil {
 		t.Fatal("expected disconnected")
 	}

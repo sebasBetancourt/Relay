@@ -151,7 +151,7 @@ sequenceDiagram
 
    | Case | Behavior |
    | --- | --- |
-   | `access_token` expired (or within 60s of expiry) | Refresh silently with the provider. Save new tokens (Microsoft rotates refresh every time). Continue the request — **do not** send the user through connect again. A background refresher also renews tokens that expire within `REFRESH_AHEAD` (default 10 minutes), so the request usually finds a live token. It claims a batch with `FOR UPDATE SKIP LOCKED` and refreshes through the same row lock; Redis is not in this path ([ADR 0006](adr/0006-background-refresh.md)). |
+   | `access_token` expired (or within 60s of expiry) | Refresh silently with the provider. Save new tokens (Microsoft rotates refresh every time). Continue the request — **do not** send the user through connect again. A background refresher also renews tokens that expire within `REFRESH_AHEAD` (default 10 minutes), so the request usually finds a live token. It claims a batch with `FOR UPDATE SKIP LOCKED` and refreshes through the same row lock. Under that lock, a token that now expires after `REFRESH_AHEAD` is left as-is, so a second pass does not rotate it again. Redis is not in this path ([ADR 0006](adr/0006-background-refresh.md)). |
    | Refresh fails (`invalid_grant` / revoked) | Mark account as `revoked`, delete tokens, return **409** Conflict with a clear body (e.g. `account_revoked`) so the client reconnects. Do **not** use 401 here — that means bad API key. The account **can** be reconnected. |
 
 8. API asks the provider for events.
