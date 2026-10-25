@@ -65,6 +65,10 @@ type Server struct {
 	mu      sync.Mutex
 	events  []Event
 	revokes atomic.Int64
+	watches map[string]watchChannel
+	last    watchChannel
+	watchN  atomic.Int64
+	stopN   atomic.Int64
 }
 
 // New starts the fake server. Closed via t.Cleanup.
@@ -82,7 +86,7 @@ func New(t *testing.T, opts Options) *Server {
 	if opts.Sub == "" {
 		opts.Sub = "sub-fake-google"
 	}
-	g := &Server{opts: opts}
+	g := &Server{opts: opts, watches: map[string]watchChannel{}}
 	g.Core = fakeoauth.New(t, fakeoauth.Config{
 		Name:         "fakegoogle",
 		ClientID:     opts.ClientID,
@@ -113,6 +117,8 @@ func New(t *testing.T, opts Options) *Server {
 	mux.HandleFunc("/token", g.HandleToken)
 	mux.HandleFunc("/revoke", g.handleRevoke)
 	mux.HandleFunc("/calendars/primary/events", g.handleEvents)
+	mux.HandleFunc("POST /calendars/primary/events/watch", g.handleWatch)
+	mux.HandleFunc("POST /channels/stop", g.handleStop)
 	g.srv = httptest.NewServer(mux)
 	t.Cleanup(g.srv.Close)
 	return g
@@ -239,6 +245,99 @@ func (g *Server) idToken(exp time.Time) string {
 	payload, _ := json.Marshal(claims)
 	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`)) + "." +
 		base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+}
+
+type watchChannel struct {
+	ID, ResourceID, Token, Address string
+	Expiration                     time.Time
+}
+
+// Watch is the last channel events.watch created.
+type Watch struct {
+	ID, ResourceID, Token, Address string
+}
+
+// Watches counts successful events.watch calls.
+func (g *Server) Watches() int64 { return g.watchN.Load() }
+
+// Stops counts successful channels.stop calls.
+func (g *Server) Stops() int64 { return g.stopN.Load() }
+
+// LastWatch returns the most recently created channel.
+func (g *Server) LastWatch() Watch {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return Watch{ID: g.last.ID, ResourceID: g.last.ResourceID, Token: g.last.Token, Address: g.last.Address}
+}
+
+func (g *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
+	g.Record(RequestRecord{Path: r.URL.Path, Header: r.Header.Clone()})
+	if g.TakeFail("watch", w) {
+		return
+	}
+	if !g.AccessOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		ID         string `json:"id"`
+		Type       string `json:"type"`
+		Address    string `json:"address"`
+		Token      string `json:"token"`
+		Expiration int64  `json:"expiration"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if body.ID == "" || body.Type != "web_hook" || body.Token == "" || !strings.HasSuffix(body.Address, "/v1/webhooks/google") {
+		http.Error(w, "bad watch", http.StatusBadRequest)
+		return
+	}
+	exp := time.UnixMilli(body.Expiration).UTC()
+	if body.Expiration == 0 {
+		exp = time.Now().Add(7 * 24 * time.Hour).UTC()
+	}
+	ch := watchChannel{ID: body.ID, ResourceID: "resource-" + body.ID, Token: body.Token, Address: body.Address, Expiration: exp}
+	g.mu.Lock()
+	g.watches[body.ID] = ch
+	g.last = ch
+	g.mu.Unlock()
+	g.watchN.Add(1)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id": ch.ID, "resourceId": ch.ResourceID, "expiration": ch.Expiration.UnixMilli(),
+	})
+}
+
+func (g *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	if g.TakeFail("stop", w) {
+		return
+	}
+	if !g.AccessOK(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		ID         string `json:"id"`
+		ResourceID string `json:"resourceId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	g.mu.Lock()
+	ch, ok := g.watches[body.ID]
+	if ok && ch.ResourceID == body.ResourceID {
+		delete(g.watches, body.ID)
+	}
+	g.mu.Unlock()
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	g.stopN.Add(1)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func eventInWindow(e Event, min, max time.Time) bool {

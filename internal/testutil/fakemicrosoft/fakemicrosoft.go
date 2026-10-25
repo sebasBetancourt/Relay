@@ -14,7 +14,10 @@
 package fakemicrosoft
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -60,12 +63,17 @@ type Calls = fakeoauth.Calls
 // Server is a fake Entra ID + Microsoft Graph.
 type Server struct {
 	*fakeoauth.Core
-	opts   Options
-	srv    *httptest.Server
-	mu     sync.Mutex
-	events []Event
-	noBox  bool
-	meN    atomic.Int64
+	opts    Options
+	srv     *httptest.Server
+	mu      sync.Mutex
+	events  []Event
+	noBox   bool
+	meN     atomic.Int64
+	subs    map[string]GraphSub
+	subN    atomic.Int64
+	patchN  atomic.Int64
+	deleteN atomic.Int64
+	lastSub GraphSub
 }
 
 // New starts the fake server. Closed via t.Cleanup.
@@ -86,7 +94,7 @@ func New(t *testing.T, opts Options) *Server {
 	if opts.UserID == "" {
 		opts.UserID = "ms-user-fake"
 	}
-	m := &Server{opts: opts}
+	m := &Server{opts: opts, subs: map[string]GraphSub{}}
 	m.Core = fakeoauth.New(t, fakeoauth.Config{
 		Name:             "fakemicrosoft",
 		ClientID:         opts.ClientID,
@@ -122,6 +130,9 @@ func New(t *testing.T, opts Options) *Server {
 	mux.HandleFunc(base+"/token", m.HandleToken)
 	mux.HandleFunc("GET /v1.0/me", m.handleMe)
 	mux.HandleFunc("GET /v1.0/me/calendarView", m.handleCalendarView)
+	mux.HandleFunc("POST /v1.0/subscriptions", m.handleCreateSub)
+	mux.HandleFunc("PATCH /v1.0/subscriptions/{id}", m.handlePatchSub)
+	mux.HandleFunc("DELETE /v1.0/subscriptions/{id}", m.handleDeleteSub)
 	m.srv = httptest.NewServer(mux)
 	t.Cleanup(m.srv.Close)
 	return m
@@ -277,6 +288,168 @@ func graphEvent(e Event) map[string]any {
 		}
 	}
 	return out
+}
+
+// GraphSub is a subscription the fake accepted.
+type GraphSub struct {
+	ID, ClientState, NotificationURL, LifecycleURL, Resource string
+	Expiration                                               time.Time
+}
+
+// Subscriptions counts successful creates.
+func (m *Server) Subscriptions() int64 { return m.subN.Load() }
+
+// Patches counts successful subscription updates.
+func (m *Server) Patches() int64 { return m.patchN.Load() }
+
+// Deletes counts successful subscription deletes.
+func (m *Server) Deletes() int64 { return m.deleteN.Load() }
+
+// LastSubscription is the most recently created subscription.
+func (m *Server) LastSubscription() GraphSub {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastSub
+}
+
+func (m *Server) handleCreateSub(w http.ResponseWriter, r *http.Request) {
+	if m.TakeFail("subscriptions", w) {
+		return
+	}
+	if !m.AccessOK(r) {
+		writeGraphError(w, http.StatusUnauthorized, "InvalidAuthenticationToken")
+		return
+	}
+	var body struct {
+		ChangeType               string `json:"changeType"`
+		NotificationURL          string `json:"notificationUrl"`
+		LifecycleNotificationURL string `json:"lifecycleNotificationUrl"`
+		Resource                 string `json:"resource"`
+		ExpirationDateTime       string `json:"expirationDateTime"`
+		ClientState              string `json:"clientState"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeGraphError(w, http.StatusBadRequest, "BadRequest")
+		return
+	}
+	exp, err := time.Parse(time.RFC3339, body.ExpirationDateTime)
+	if err != nil || body.Resource != "me/events" || body.ClientState == "" ||
+		!strings.Contains(body.ChangeType, "created") ||
+		!strings.HasSuffix(body.NotificationURL, "/v1/webhooks/microsoft") ||
+		!strings.HasSuffix(body.LifecycleNotificationURL, "/v1/webhooks/microsoft/lifecycle") {
+		writeGraphError(w, http.StatusBadRequest, "BadRequest")
+		return
+	}
+	if exp.After(time.Now().Add(10080*time.Minute + time.Minute)) {
+		writeGraphError(w, http.StatusBadRequest, "ExpirationTooFar")
+		return
+	}
+	if err := m.handshake(body.NotificationURL); err != nil {
+		writeGraphError(w, http.StatusBadRequest, "ValidationError")
+		return
+	}
+	id := "sub-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	sub := GraphSub{
+		ID: id, ClientState: body.ClientState, NotificationURL: body.NotificationURL,
+		LifecycleURL: body.LifecycleNotificationURL, Resource: body.Resource, Expiration: exp.UTC(),
+	}
+	m.mu.Lock()
+	m.subs[id] = sub
+	m.lastSub = sub
+	m.mu.Unlock()
+	m.subN.Add(1)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id": id, "resource": body.Resource, "expirationDateTime": exp.UTC().Format(time.RFC3339),
+	})
+}
+
+func (m *Server) handshake(notificationURL string) error {
+	token := "valid token"
+	u, err := url.Parse(notificationURL)
+	if err != nil {
+		return err
+	}
+	q := u.Query()
+	q.Set("validationToken", token)
+	u.RawQuery = q.Encode()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK || string(body) != token {
+		return fmt.Errorf("validation handshake: status %d body %q", resp.StatusCode, body)
+	}
+	return nil
+}
+
+func (m *Server) handlePatchSub(w http.ResponseWriter, r *http.Request) {
+	if m.TakeFail("subscriptions", w) {
+		return
+	}
+	if !m.AccessOK(r) {
+		writeGraphError(w, http.StatusUnauthorized, "InvalidAuthenticationToken")
+		return
+	}
+	id := r.PathValue("id")
+	m.mu.Lock()
+	sub, ok := m.subs[id]
+	m.mu.Unlock()
+	if !ok {
+		writeGraphError(w, http.StatusNotFound, "ResourceNotFound")
+		return
+	}
+	var body struct {
+		ExpirationDateTime string `json:"expirationDateTime"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeGraphError(w, http.StatusBadRequest, "BadRequest")
+		return
+	}
+	exp, err := time.Parse(time.RFC3339, body.ExpirationDateTime)
+	if err != nil || exp.After(time.Now().Add(10080*time.Minute+time.Minute)) {
+		writeGraphError(w, http.StatusBadRequest, "ExpirationTooFar")
+		return
+	}
+	sub.Expiration = exp.UTC()
+	m.mu.Lock()
+	m.subs[id] = sub
+	m.mu.Unlock()
+	m.patchN.Add(1)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "expirationDateTime": exp.UTC().Format(time.RFC3339)})
+}
+
+func (m *Server) handleDeleteSub(w http.ResponseWriter, r *http.Request) {
+	if m.TakeFail("subscriptions", w) {
+		return
+	}
+	if !m.AccessOK(r) {
+		writeGraphError(w, http.StatusUnauthorized, "InvalidAuthenticationToken")
+		return
+	}
+	id := r.PathValue("id")
+	m.mu.Lock()
+	_, ok := m.subs[id]
+	if ok {
+		delete(m.subs, id)
+	}
+	m.mu.Unlock()
+	if !ok {
+		writeGraphError(w, http.StatusNotFound, "ResourceNotFound")
+		return
+	}
+	m.deleteN.Add(1)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeGraphError(w http.ResponseWriter, status int, code string) {

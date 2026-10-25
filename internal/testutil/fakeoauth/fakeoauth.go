@@ -300,6 +300,14 @@ func (c *Core) redirect(v url.Values) string {
 }
 
 // AccessOK reports whether r carries a valid Bearer access token.
+// IssueAccess inserts a live access token. Tests that call a provider API
+// without going through the token endpoint use it.
+func (c *Core) IssueAccess(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.access[token] = &accessTok{expiry: time.Now().Add(c.cfg.AccessTTL)}
+}
+
 func (c *Core) AccessOK(r *http.Request) bool {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
