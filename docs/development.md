@@ -65,6 +65,7 @@ internal/
   apikey/                   API key generation, checksum and hashing
   vault/                    AES-256-GCM encryption with AAD for tokens at rest
   janitor/                  background purge of expired oauth_states
+  refresher/                background renewal of access tokens about to expire
   buildinfo/                version stamped at build time
   testutil/                 stateful fake providers for tests (fakeoauth, fakegoogle, fakemicrosoft)
 test/e2e/                   end-to-end flow suite

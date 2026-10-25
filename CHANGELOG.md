@@ -6,6 +6,10 @@ All notable changes to Relay are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Background refresher renews access tokens before they expire (`REFRESH_AHEAD`, `REFRESH_CONCURRENCY`). Replica safety stays on the Postgres row lock; batches are claimed with `FOR UPDATE SKIP LOCKED` ([ADR 0006](docs/adr/0006-background-refresh.md)).
+
 ## [0.1.0] - 2026-10-20
 
 First public release: one API for Google Calendar and Outlook.

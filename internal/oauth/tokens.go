@@ -55,6 +55,32 @@ func (s *Service) RefreshAccessToken(ctx context.Context, tenantID, accountID st
 	return s.token(ctx, tenantID, accountID, true)
 }
 
+// RefreshAccount renews the access token when it expires within ahead
+// (the background refresher passes REFRESH_AHEAD). ahead is checked again
+// under the row lock, on the re-read row: a second call, or a lazy refresh
+// that already stored a later expiry, returns without calling the provider.
+//
+// A disconnected account is left untouched (ErrAccountDisconnected).
+// A missing row is store.ErrNotFound.
+func (s *Service) RefreshAccount(ctx context.Context, accountID string, ahead time.Duration) error {
+	acct, err := s.accounts.AccountByID(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	switch acct.Status {
+	case "active":
+	case "disconnected":
+		return ErrAccountDisconnected
+	default:
+		return ErrAccountRevoked
+	}
+	if !acct.HasTokens || len(acct.AccessEnc) == 0 {
+		return fmt.Errorf("refresh account: active account without tokens")
+	}
+	_, err = s.refresh(ctx, acct, ahead)
+	return err
+}
+
 func (s *Service) token(ctx context.Context, tenantID, accountID string, force bool) (AccessToken, error) {
 	acct, err := s.accounts.AccountForTenant(ctx, accountID, tenantID)
 	if err != nil {
@@ -78,15 +104,25 @@ func (s *Service) token(ctx context.Context, tenantID, accountID string, force b
 	if !force && time.Until(acct.ExpiresAt) > refreshSkew {
 		return AccessToken{Value: access, Provider: Provider(acct.Provider)}, nil
 	}
-	return s.refresh(ctx, acct)
+	// ahead 0: this caller already decided the token must be refreshed
+	// (within 60s, or a forced retry after a provider 401).
+	return s.refresh(ctx, acct, 0)
 }
 
 // refresh coordinates at two levels: singleflight collapses concurrent
 // callers inside this process, and store.RefreshLocked serializes replicas
 // through a row lock in Postgres.
-func (s *Service) refresh(ctx context.Context, seen store.StoredAccount) (AccessToken, error) {
-	v, err, _ := s.flight.Do(seen.ID, func() (any, error) {
-		return s.doRefresh(ctx, seen)
+//
+// A background refresh (ahead > 0) uses its own singleflight key. It may
+// return the current token without calling the provider; a request that
+// must refresh (ahead 0) cannot share that result.
+func (s *Service) refresh(ctx context.Context, seen store.StoredAccount, ahead time.Duration) (AccessToken, error) {
+	key := seen.ID
+	if ahead > 0 {
+		key += "\x00ahead"
+	}
+	v, err, _ := s.flight.Do(key, func() (any, error) {
+		return s.doRefresh(ctx, seen, ahead)
 	})
 	if err != nil {
 		return AccessToken{}, err
@@ -96,7 +132,9 @@ func (s *Service) refresh(ctx context.Context, seen store.StoredAccount) (Access
 
 // doRefresh runs the provider refresh under the account's row lock.
 // seen is the row this request read before deciding to refresh.
-func (s *Service) doRefresh(ctx context.Context, seen store.StoredAccount) (AccessToken, error) {
+// ahead > 0 skips the provider call when the locked row still expires
+// after now+ahead.
+func (s *Service) doRefresh(ctx context.Context, seen store.StoredAccount, ahead time.Duration) (AccessToken, error) {
 	var (
 		out           AccessToken
 		refreshed     bool
@@ -106,6 +144,18 @@ func (s *Service) doRefresh(ctx context.Context, seen store.StoredAccount) (Acce
 	)
 
 	err := s.accounts.RefreshLocked(ctx, seen.ID, func(cur store.StoredAccount) (*store.TokenUpdate, error) {
+		// Re-read under the lock. A previous RefreshAccount, or a lazy
+		// refresh that committed first, may already have pushed expiry
+		// past the window. Leave that token in place.
+		if ahead > 0 && time.Until(cur.ExpiresAt) > ahead {
+			access, err := s.decrypt(cur, "access_token", cur.AccessEnc, cur.AccessNonce)
+			if err != nil {
+				return nil, err
+			}
+			out = AccessToken{Value: access, Provider: provider}
+			return nil, nil
+		}
+
 		// Another replica (or request) stored a new token while we waited
 		// for the lock: use it instead of refreshing again. Comparing the
 		// nonce tells "new ciphertext" apart from "the token we already saw".

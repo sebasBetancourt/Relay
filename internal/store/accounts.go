@@ -98,6 +98,98 @@ func (s *Accounts) AccountForTenant(ctx context.Context, accountID, tenantID str
 	return a, nil
 }
 
+// AccountByID loads an account without a tenant check. The background
+// refresher uses it; request handlers must keep using AccountForTenant.
+// A non-uuid id is ErrNotFound.
+func (s *Accounts) AccountByID(ctx context.Context, accountID string) (StoredAccount, error) {
+	var a StoredAccount
+	var expiresAt *time.Time
+	err := s.db.QueryRow(ctx, `
+		SELECT a.id::text, a.tenant_id::text, a.provider::text, a.provider_account_id,
+		       COALESCE(a.email, ''), a.status::text,
+		       t.access_token_enc, t.access_nonce, t.refresh_token_enc, t.refresh_nonce, t.expires_at
+		FROM connected_accounts a
+		LEFT JOIN oauth_tokens t ON t.account_id = a.id
+		WHERE a.id = $1`,
+		accountID,
+	).Scan(
+		&a.ID, &a.TenantID, &a.Provider, &a.ProviderAccountID, &a.Email, &a.Status,
+		&a.AccessEnc, &a.AccessNonce, &a.RefreshEnc, &a.RefreshNonce, &expiresAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StoredAccount{}, ErrNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == pgInvalidTextRepr {
+		return StoredAccount{}, ErrNotFound
+	}
+	if err != nil {
+		return StoredAccount{}, fmt.Errorf("account by id: %w", err)
+	}
+	if expiresAt != nil {
+		a.ExpiresAt = expiresAt.UTC()
+		a.HasTokens = true
+	}
+	return a, nil
+}
+
+// ClaimExpiring locks up to limit active accounts whose access token expires
+// within ahead (compared with Postgres now(), not the process clock) and
+// calls fn while those rows are held with FOR UPDATE SKIP LOCKED.
+//
+// fn must return quickly and must not call RefreshLocked on the same rows:
+// that lock is already held here, so a second one would deadlock. The
+// refresher copies the ids and refreshes after this transaction commits.
+// A concurrent claim skips the locked rows, so two replicas do not take
+// the same account in one cycle.
+func (s *Accounts) ClaimExpiring(ctx context.Context, ahead time.Duration, limit int, fn func(ids []string) error) error {
+	if limit <= 0 {
+		return nil
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("claim expiring: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		SELECT t.account_id::text
+		FROM oauth_tokens t
+		JOIN connected_accounts a ON a.id = t.account_id AND a.status = 'active'
+		WHERE t.expires_at < now() + make_interval(secs => $1)
+		ORDER BY t.expires_at
+		LIMIT $2
+		FOR UPDATE OF t SKIP LOCKED`,
+		ahead.Seconds(), limit,
+	)
+	if err != nil {
+		return fmt.Errorf("claim expiring: select: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("claim expiring: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("claim expiring: rows: %w", err)
+	}
+	rows.Close()
+
+	if fn != nil {
+		if err := fn(ids); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("claim expiring: commit: %w", err)
+	}
+	return nil
+}
+
 // UpdateTokens replaces the access token (and refresh when provided).
 func (s *Accounts) UpdateTokens(ctx context.Context, accountID string, u TokenUpdate) error {
 	return updateTokens(ctx, s.db, accountID, u)

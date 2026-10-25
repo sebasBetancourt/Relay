@@ -130,7 +130,7 @@ Normalization, for both providers:
 - `timezone`: the event's IANA zone. Outlook's Windows names (`"SA Pacific Standard Time"`) are mapped with CLDR (`America/Bogota`); unknown zones are left empty, never guessed.
 - Recurring events are expanded into occurrences.
 
-Expired access tokens are refreshed silently: 60s skew, singleflight per account, and a row lock in Postgres so replicas never race (Microsoft rotates the refresh token on every refresh). If the provider rejects the refresh, the account is marked `revoked` and the client gets **409** (reconnect via `/v1/connect/{provider}`).
+Expired access tokens are refreshed silently: 60s skew, singleflight per account, and a row lock in Postgres so replicas never race (Microsoft rotates the refresh token on every refresh). A background job also renews tokens about 10 minutes before they expire (`REFRESH_AHEAD`, `REFRESH_CONCURRENCY`). If the provider rejects the refresh, the account is marked `revoked` and the client gets **409** (reconnect via `/v1/connect/{provider}`).
 
 | Case | Status | `error` |
 | --- | --- | --- |

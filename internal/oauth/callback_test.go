@@ -40,6 +40,10 @@ func (f *fakeAccounts) AccountForTenant(context.Context, string, string) (store.
 	return store.StoredAccount{}, store.ErrNotFound
 }
 
+func (f *fakeAccounts) AccountByID(context.Context, string) (store.StoredAccount, error) {
+	return store.StoredAccount{}, store.ErrNotFound
+}
+
 func (f *fakeAccounts) RefreshLocked(context.Context, string, func(store.StoredAccount) (*store.TokenUpdate, error)) error {
 	return store.ErrNotFound
 }

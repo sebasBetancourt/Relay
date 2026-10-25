@@ -37,6 +37,10 @@ func (f *tokenFakeAccounts) SaveConnection(context.Context, store.Connection) (s
 }
 
 func (f *tokenFakeAccounts) AccountForTenant(context.Context, string, string) (store.StoredAccount, error) {
+	return f.AccountByID(context.Background(), "")
+}
+
+func (f *tokenFakeAccounts) AccountByID(context.Context, string) (store.StoredAccount, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.getErr != nil {
@@ -145,6 +149,59 @@ func tokenService(t *testing.T, accounts AccountStore, v *vault.Vault, tokenURL 
 		Providers:  map[Provider]ProviderSpec{ProviderGoogle: spec},
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
+}
+
+func TestRefreshAccountDisconnectAndMissingRefresh(t *testing.T) {
+	v := testVault(t)
+	acct := seedActiveAccount(t, v, time.Now().Add(-time.Minute))
+	acct.Status = "disconnected"
+	fa := &tokenFakeAccounts{acct: acct}
+	svc := tokenService(t, fa, v, "http://127.0.0.1:1", nil)
+	err := svc.RefreshAccount(context.Background(), acct.ID, 10*time.Minute)
+	if !errors.Is(err, ErrAccountDisconnected) || fa.revoked != 0 {
+		t.Fatalf("err=%v revoked=%d", err, fa.revoked)
+	}
+
+	acct = seedActiveAccount(t, v, time.Now().Add(-time.Minute))
+	acct.RefreshEnc = nil
+	acct.RefreshNonce = nil
+	fa = &tokenFakeAccounts{acct: acct}
+	svc = tokenService(t, fa, v, "http://127.0.0.1:1", nil)
+	err = svc.RefreshAccount(context.Background(), acct.ID, 10*time.Minute)
+	if !errors.Is(err, ErrAccountRevoked) || fa.revoked != 1 {
+		t.Fatalf("missing refresh: err=%v revoked=%d", err, fa.revoked)
+	}
+}
+
+// Two RefreshAccount calls in a row: the first stores an expiry past ahead,
+// and the second, under the row lock, must not call the provider again.
+func TestRefreshAccountTwiceRefreshesOnce(t *testing.T) {
+	v := testVault(t)
+	acct := seedActiveAccount(t, v, time.Now().Add(-time.Minute))
+	fa := &tokenFakeAccounts{acct: acct}
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "access-new",
+			"expires_in":   3600,
+			"token_type":   "Bearer",
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	svc := tokenService(t, fa, v, srv.URL, nil)
+	ahead := 10 * time.Minute
+	if err := svc.RefreshAccount(context.Background(), acct.ID, ahead); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RefreshAccount(context.Background(), acct.ID, ahead); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refreshes = %d, want exactly 1", calls.Load())
+	}
 }
 
 func TestAccessTokenFreshNoRefresh(t *testing.T) {
