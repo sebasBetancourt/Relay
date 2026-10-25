@@ -37,6 +37,10 @@ func (f *tokenFakeAccounts) SaveConnection(context.Context, store.Connection) (s
 }
 
 func (f *tokenFakeAccounts) AccountForTenant(context.Context, string, string) (store.StoredAccount, error) {
+	return f.AccountByID(context.Background(), "")
+}
+
+func (f *tokenFakeAccounts) AccountByID(context.Context, string) (store.StoredAccount, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.getErr != nil {
@@ -145,6 +149,28 @@ func tokenService(t *testing.T, accounts AccountStore, v *vault.Vault, tokenURL 
 		Providers:  map[Provider]ProviderSpec{ProviderGoogle: spec},
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
+}
+
+func TestRefreshAccountDisconnectAndMissingRefresh(t *testing.T) {
+	v := testVault(t)
+	acct := seedActiveAccount(t, v, time.Now().Add(-time.Minute))
+	acct.Status = "disconnected"
+	fa := &tokenFakeAccounts{acct: acct}
+	svc := tokenService(t, fa, v, "http://127.0.0.1:1", nil)
+	err := svc.RefreshAccount(context.Background(), acct.ID)
+	if !errors.Is(err, ErrAccountDisconnected) || fa.revoked != 0 {
+		t.Fatalf("err=%v revoked=%d", err, fa.revoked)
+	}
+
+	acct = seedActiveAccount(t, v, time.Now().Add(-time.Minute))
+	acct.RefreshEnc = nil
+	acct.RefreshNonce = nil
+	fa = &tokenFakeAccounts{acct: acct}
+	svc = tokenService(t, fa, v, "http://127.0.0.1:1", nil)
+	err = svc.RefreshAccount(context.Background(), acct.ID)
+	if !errors.Is(err, ErrAccountRevoked) || fa.revoked != 1 {
+		t.Fatalf("missing refresh: err=%v revoked=%d", err, fa.revoked)
+	}
 }
 
 func TestAccessTokenFreshNoRefresh(t *testing.T) {

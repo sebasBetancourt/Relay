@@ -20,7 +20,10 @@ func setValidEnv(t *testing.T) {
 	t.Setenv("ENCRYPTION_KEY", validKey)
 	t.Setenv("RELAY_ENV", "test")
 	// Isolate from a developer shell that exports real Microsoft values.
-	for _, k := range []string{"MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET", "MICROSOFT_REDIRECT_URL", "MICROSOFT_TENANT_ID", "MICROSOFT_EXPIRATION_DATE"} {
+	for _, k := range []string{
+		"MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET", "MICROSOFT_REDIRECT_URL", "MICROSOFT_TENANT_ID", "MICROSOFT_EXPIRATION_DATE",
+		"REFRESH_AHEAD", "REFRESH_CONCURRENCY",
+	} {
 		t.Setenv(k, "")
 	}
 }
@@ -58,6 +61,9 @@ func TestLoadValid(t *testing.T) {
 	if cfg.Port != "8080" {
 		t.Fatalf("expected default port 8080, got %q", cfg.Port)
 	}
+	if cfg.RefreshAhead != 10*time.Minute || cfg.RefreshConcurrency != 8 {
+		t.Fatalf("refresh defaults = %s / %d", cfg.RefreshAhead, cfg.RefreshConcurrency)
+	}
 }
 
 func TestLoadInvalid(t *testing.T) {
@@ -79,6 +85,9 @@ func TestLoadInvalid(t *testing.T) {
 		{"unknown relay env", "RELAY_ENV", "prod", `must be "live" or "test", got "prod"`},
 		{"uppercase relay env", "RELAY_ENV", "LIVE", `got "LIVE"`},
 		{"encryption key too short", "ENCRYPTION_KEY", base64.StdEncoding.EncodeToString(make([]byte, 16)), "got 16"},
+		{"refresh ahead not a duration", "REFRESH_AHEAD", "soon", "REFRESH_AHEAD"},
+		{"refresh ahead zero", "REFRESH_AHEAD", "0s", "REFRESH_AHEAD"},
+		{"refresh concurrency zero", "REFRESH_CONCURRENCY", "0", "REFRESH_CONCURRENCY"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

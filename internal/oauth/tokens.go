@@ -55,6 +55,33 @@ func (s *Service) RefreshAccessToken(ctx context.Context, tenantID, accountID st
 	return s.token(ctx, tenantID, accountID, true)
 }
 
+// RefreshAccount renews the access token for one account, ignoring the
+// 60s request skew. The background refresher calls it for tokens that
+// expire within REFRESH_AHEAD. It uses the same doRefresh path as a
+// request (row lock, AAD, revocation), so a replica that already refreshed
+// the row is reused instead of rotating the refresh token again.
+//
+// A disconnected account is left untouched (ErrAccountDisconnected).
+// A missing row is store.ErrNotFound.
+func (s *Service) RefreshAccount(ctx context.Context, accountID string) error {
+	acct, err := s.accounts.AccountByID(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	switch acct.Status {
+	case "active":
+	case "disconnected":
+		return ErrAccountDisconnected
+	default:
+		return ErrAccountRevoked
+	}
+	if !acct.HasTokens || len(acct.AccessEnc) == 0 {
+		return fmt.Errorf("refresh account: active account without tokens")
+	}
+	_, err = s.refresh(ctx, acct)
+	return err
+}
+
 func (s *Service) token(ctx context.Context, tenantID, accountID string, force bool) (AccessToken, error) {
 	acct, err := s.accounts.AccountForTenant(ctx, accountID, tenantID)
 	if err != nil {

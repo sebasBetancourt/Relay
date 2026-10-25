@@ -52,6 +52,7 @@ type StateStore interface {
 type AccountStore interface {
 	SaveConnection(ctx context.Context, c store.Connection) (accountID string, err error)
 	AccountForTenant(ctx context.Context, accountID, tenantID string) (store.StoredAccount, error)
+	AccountByID(ctx context.Context, accountID string) (store.StoredAccount, error)
 	// RefreshLocked runs fn under a per-account row lock shared by every
 	// replica, and stores fn's update in the same transaction.
 	RefreshLocked(ctx context.Context, accountID string, fn func(cur store.StoredAccount) (*store.TokenUpdate, error)) error

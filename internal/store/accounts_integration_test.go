@@ -372,6 +372,97 @@ func TestRefreshLockedSerializesReplicas(t *testing.T) {
 	}
 }
 
+func TestClaimExpiringUsesPostgresClockAndSkipLocked(t *testing.T) {
+	tenants := newTestTenants(t)
+	ctx := context.Background()
+	tenant := createTenant(t, tenants, "Claim", apikey.Generate(apikey.EnvTest))
+	replicaA := NewAccounts(tenants.db)
+
+	// Expiry is written with Postgres now(), not the process clock.
+	soon := seedTokenAccount(t, replicaA, tenant.ID, "claim-soon-"+tenant.ID[:8], "")
+	later := seedTokenAccount(t, replicaA, tenant.ID, "claim-later-"+tenant.ID[:8], "")
+	_, err := tenants.db.Exec(ctx, `UPDATE oauth_tokens SET expires_at = now() + interval '5 minutes' WHERE account_id = $1`, soon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tenants.db.Exec(ctx, `UPDATE oauth_tokens SET expires_at = now() + interval '3 hours' WHERE account_id = $1`, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var due []string
+	// limit is high because other packages may have expiring rows in this database.
+	err = replicaA.ClaimExpiring(ctx, 10*time.Minute, 1000, func(ids []string) error {
+		due = ids
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotSoon := false
+	for _, id := range due {
+		if id == later {
+			t.Fatal("account outside the window was claimed")
+		}
+		if id == soon {
+			gotSoon = true
+		}
+	}
+	if !gotSoon {
+		t.Fatal("account inside the window was not claimed")
+	}
+
+	// Two pools, one claim held open: SKIP LOCKED gives each account to one replica.
+	var held []string
+	for range 4 {
+		held = append(held, seedTokenAccount(t, replicaA, tenant.ID, "claim-hold-"+tenant.ID[:8]+"-"+string(rune('a'+len(held))), ""))
+	}
+	otherPool, err := NewPool(ctx, os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(otherPool.Close)
+	replicaB := NewAccounts(otherPool)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var idsA []string
+	errA := make(chan error, 1)
+	go func() {
+		errA <- replicaA.ClaimExpiring(ctx, time.Hour, 1000, func(ids []string) error {
+			idsA = ids
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+	var idsB []string
+	err = replicaB.ClaimExpiring(ctx, time.Hour, 1000, func(ids []string) error {
+		idsB = ids
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-errA; err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]int{}
+	for _, id := range append(append([]string{}, idsA...), idsB...) {
+		seen[id]++
+	}
+	for _, id := range held {
+		if seen[id] != 1 {
+			t.Fatalf("account %s claimed %d times, want 1 (A=%v B=%v)", id, seen[id], idsA, idsB)
+		}
+	}
+	if seen[later] != 0 {
+		t.Fatalf("account outside the window was claimed: %v", seen)
+	}
+}
+
 func TestListForTenantKeysetPaging(t *testing.T) {
 	tenants := newTestTenants(t)
 	accounts := NewAccounts(tenants.db)

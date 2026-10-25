@@ -60,6 +60,7 @@ type flow struct {
 	pool     *pgxpool.Pool
 	tenants  *store.Tenants
 	accounts *store.Accounts
+	svc      *oauth.Service
 	vlt      *vault.Vault
 	google   *fakegoogle.Server
 	ms       *fakemicrosoft.Server
@@ -166,6 +167,10 @@ func (f *flow) buildRouter(pool *pgxpool.Pool) http.Handler {
 		HTTPClient: client,
 		Log:        discardLogger(),
 	})
+	if pool == f.pool {
+		f.svc = oauthSvc
+		f.accounts = accounts
+	}
 	calSvc := calendar.NewService(oauthSvc, map[oauth.Provider]calendar.Source{
 		oauth.ProviderGoogle:    &calendar.GoogleSource{BaseURL: f.google.APIBaseURL(), HTTP: client},
 		oauth.ProviderMicrosoft: &calendar.MicrosoftSource{BaseURL: f.ms.GraphBaseURL(), HTTP: client},

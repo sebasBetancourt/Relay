@@ -22,6 +22,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/httpapi"
 	"github.com/sebasBetancourt/relay/internal/janitor"
 	"github.com/sebasBetancourt/relay/internal/oauth"
+	"github.com/sebasBetancourt/relay/internal/refresher"
 	"github.com/sebasBetancourt/relay/internal/store"
 	"github.com/sebasBetancourt/relay/internal/vault"
 )
@@ -104,17 +105,29 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Janitor shares the pool: cancel it before pool.Close on shutdown.
-	janitorCtx, janitorCancel := context.WithCancel(context.Background())
+	// Background jobs share the pool: cancel them and wait before pool.Close,
+	// or their last query fails with "pool closed".
+	bgCtx, bgCancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		janitor.Run(janitorCtx, janitor.Config{
+		janitor.Run(bgCtx, janitor.Config{
 			Log:      log,
 			Purger:   oauthStates,
 			Interval: 10 * time.Minute,
 			Batch:    1000,
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		refresher.Run(bgCtx, refresher.Config{
+			Log:         log,
+			Accounts:    accounts,
+			Refresh:     oauthSvc,
+			Interval:    time.Minute,
+			Ahead:       cfg.RefreshAhead,
+			Concurrency: cfg.RefreshConcurrency,
 		})
 	}()
 
@@ -136,7 +149,7 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("forced shutdown", "err", err)
 	}
-	janitorCancel()
+	bgCancel()
 	wg.Wait()
 	pool.Close()
 	log.Info("bye")

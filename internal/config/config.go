@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +55,12 @@ type Config struct {
 
 	// EncryptionKey is the decoded ENCRYPTION_KEY (32 bytes). Never log it.
 	EncryptionKey []byte
+
+	// RefreshAhead is how early the background refresher renews an access
+	// token (REFRESH_AHEAD, default 10m). RefreshConcurrency is how many
+	// provider refresh calls run at once (REFRESH_CONCURRENCY, default 8).
+	RefreshAhead       time.Duration
+	RefreshConcurrency int
 }
 
 // Load reads the environment and fails fast: every missing or invalid
@@ -97,6 +104,17 @@ func load(now time.Time) (Config, error) {
 		errs = append(errs, fmt.Errorf("ENCRYPTION_KEY: %w", err))
 	}
 	cfg.EncryptionKey = key
+
+	ahead, err := durationEnv("REFRESH_AHEAD", 10*time.Minute)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.RefreshAhead = ahead
+	n, err := positiveIntEnv("REFRESH_CONCURRENCY", 8)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.RefreshConcurrency = n
 
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("invalid config: %w", errors.Join(errs...))
@@ -257,4 +275,28 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func durationEnv(key string, fallback time.Duration) (time.Duration, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s: must be a positive duration (e.g. 10m), got %q", key, raw)
+	}
+	return d, nil
+}
+
+func positiveIntEnv(key string, fallback int) (int, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("%s: must be a positive integer, got %q", key, raw)
+	}
+	return n, nil
 }
