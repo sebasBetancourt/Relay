@@ -23,8 +23,11 @@ import (
 	"github.com/sebasBetancourt/relay/internal/apikey"
 	"github.com/sebasBetancourt/relay/internal/calendar"
 	"github.com/sebasBetancourt/relay/internal/httpapi"
+	"github.com/sebasBetancourt/relay/internal/notify"
 	"github.com/sebasBetancourt/relay/internal/oauth"
+	"github.com/sebasBetancourt/relay/internal/queue"
 	"github.com/sebasBetancourt/relay/internal/store"
+	"github.com/sebasBetancourt/relay/internal/sync"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakegoogle"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakemicrosoft"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakeoauth"
@@ -54,19 +57,23 @@ const (
 )
 
 type flow struct {
-	t        *testing.T
-	ctx      context.Context
-	dbURL    string
-	pool     *pgxpool.Pool
-	tenants  *store.Tenants
-	accounts *store.Accounts
-	svc      *oauth.Service
-	vlt      *vault.Vault
-	google   *fakegoogle.Server
-	ms       *fakemicrosoft.Server
-	router   http.Handler
-	key      apikey.Key
-	tenant   store.Tenant
+	t           *testing.T
+	ctx         context.Context
+	dbURL       string
+	pool        *pgxpool.Pool
+	tenants     *store.Tenants
+	accounts    *store.Accounts
+	svc         *oauth.Service
+	vlt         *vault.Vault
+	google      *fakegoogle.Server
+	ms          *fakemicrosoft.Server
+	router      http.Handler
+	key         apikey.Key
+	tenant      store.Tenant
+	nats        *queue.Client
+	webhookBase string
+	syncOn      bool
+	syncSvc     *sync.Service
 }
 
 // newFlow wires one API "replica" with both providers enabled, a fresh
@@ -175,10 +182,35 @@ func (f *flow) buildRouter(pool *pgxpool.Pool) http.Handler {
 		oauth.ProviderGoogle:    &calendar.GoogleSource{BaseURL: f.google.APIBaseURL(), HTTP: client},
 		oauth.ProviderMicrosoft: &calendar.MicrosoftSource{BaseURL: f.ms.GraphBaseURL(), HTTP: client},
 	})
+	var hooks httpapi.Webhooks
+	if f.nats != nil && f.webhookBase != "" && pool == f.pool {
+		nsvc := notify.New(notify.Deps{
+			Log: discardLogger(), Accounts: accounts, Tokens: oauthSvc,
+			Subs: store.NewSubscriptions(pool), Publish: f.nats, BaseURL: f.webhookBase,
+			Providers: map[string]notify.Provider{
+				"google":    &notify.Google{BaseURL: f.google.APIBaseURL(), HTTP: client},
+				"microsoft": &notify.Microsoft{BaseURL: f.ms.GraphBaseURL(), HTTP: client},
+			},
+		})
+		oauthSvc.UsePush(nsvc)
+		hooks = nsvc
+	}
+	if f.syncOn && f.nats != nil && pool == f.pool {
+		ss := sync.New(sync.Deps{
+			Log: discardLogger(), Accounts: accounts, Tokens: oauthSvc,
+			Store: store.NewSyncStore(pool), Publish: f.nats,
+			Sources: map[string]sync.DeltaSource{
+				"google":    &sync.Google{BaseURL: f.google.APIBaseURL(), HTTP: client},
+				"microsoft": &sync.Microsoft{BaseURL: f.ms.GraphBaseURL(), HTTP: client},
+			},
+		})
+		oauthSvc.UseSync(ss)
+		f.syncSvc = ss
+	}
 	return httpapi.NewRouter(httpapi.Deps{
 		Log: discardLogger(), DB: pool, Tenants: store.NewTenants(pool), Env: apikey.EnvTest,
 		Connect: oauthSvc, Callback: oauthSvc, Calendar: calSvc,
-		Accounts: accounts, Disconnect: oauthSvc,
+		Accounts: accounts, Disconnect: oauthSvc, Webhooks: hooks,
 	})
 }
 

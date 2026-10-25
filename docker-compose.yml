@@ -44,11 +44,22 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
       REFRESH_AHEAD: ${REFRESH_AHEAD:-10m}
       REFRESH_CONCURRENCY: ${REFRESH_CONCURRENCY:-8}
+      # Empty disables push. Set a public https origin to subscribe calendars.
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
     ports:
       - "8080:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      nats:
+        condition: service_started
+
+  nats:
+    image: nats:2.11-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
 
   # UI for Postgres: docker compose --profile tools up -d adminer
   # Open http://localhost:8081  → System: PostgreSQL, Server: postgres, User/Pass/DB: relay

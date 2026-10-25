@@ -30,5 +30,6 @@ Out of scope:
 - API keys are stored only as SHA-256 hashes and shown once.
 - The OAuth flow uses PKCE (S256) and a one-time, 10-minute `state`.
 - Provider hosts are fixed by configuration: client input never chooses where Relay sends a user's token.
-- Tokens, API keys, OAuth states and code verifiers are never logged.
+- Tokens, API keys, OAuth states, code verifiers and sync cursors (`syncToken`, `deltaLink`) are never logged.
+- `synced_events` holds a copy of the user's calendar. Disconnect deletes that copy and its cursor; deleting the account row does the same through `ON DELETE CASCADE`.
 - CI runs `govulncheck` on every change, and Dependabot keeps dependencies current.

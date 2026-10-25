@@ -66,6 +66,9 @@ internal/
   vault/                    AES-256-GCM encryption with AAD for tokens at rest
   janitor/                  background purge of expired oauth_states
   refresher/                background renewal of access tokens about to expire
+  notify/                   calendar push: subscribe, verify webhooks, renew
+  sync/                     delta sync: cursors, idempotent upserts, periodic catch-up
+  queue/                    NATS JetStream (sync jobs and subscription lifecycle)
   buildinfo/                version stamped at build time
   testutil/                 stateful fake providers for tests (fakeoauth, fakegoogle, fakemicrosoft)
 test/e2e/                   end-to-end flow suite
@@ -75,7 +78,7 @@ docs/                       design, ADRs, provider setup guides, API guide
 bin/                        build output (gitignored)
 ```
 
-Dependencies point one way: `httpapi → calendar → oauth → store`. `vault`, `apikey` and `store` import nothing internal. Interfaces are declared by the package that uses them (e.g. `middleware.TenantLookup`, `oauth.StateStore`), so each package can be tested with small fakes.
+Dependencies point one way: `httpapi → calendar → oauth → store`, `httpapi → notify → oauth`, and `sync → calendar`. `notify` and `sync` publish through `queue`. `oauth` does not import `notify` or `sync`; it calls optional `CalendarPush` and `SyncKick` interfaces. `vault`, `apikey`, `store` and `queue` import nothing internal. Interfaces are declared by the package that uses them (e.g. `middleware.TenantLookup`, `oauth.StateStore`), so each package can be tested with small fakes.
 
 ## Releasing
 

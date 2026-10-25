@@ -61,6 +61,15 @@ type Config struct {
 	// provider refresh calls run at once (REFRESH_CONCURRENCY, default 8).
 	RefreshAhead       time.Duration
 	RefreshConcurrency int
+
+	// WebhookBaseURL is the public origin providers call (WEBHOOK_BASE_URL).
+	// Empty disables push; calendar reads stay on demand. When it is set,
+	// NATSURL is required and the URL must be https, except loopback http
+	// used by local tests.
+	WebhookBaseURL string
+	// NATSURL enables the JetStream sync consumer. Required when
+	// WebhookBaseURL is set. Empty leaves delta sync off.
+	NATSURL string
 }
 
 // Load reads the environment and fails fast: every missing or invalid
@@ -115,6 +124,16 @@ func load(now time.Time) (Config, error) {
 		errs = append(errs, err)
 	}
 	cfg.RefreshConcurrency = n
+
+	webhook, whErr := validateWebhook(os.Getenv("WEBHOOK_BASE_URL"))
+	if whErr != nil {
+		errs = append(errs, fmt.Errorf("WEBHOOK_BASE_URL: %w", whErr))
+	}
+	cfg.WebhookBaseURL = webhook
+	cfg.NATSURL = os.Getenv("NATS_URL")
+	if cfg.WebhookBaseURL != "" && cfg.NATSURL == "" {
+		errs = append(errs, errors.New("NATS_URL is required when WEBHOOK_BASE_URL is set"))
+	}
 
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("invalid config: %w", errors.Join(errs...))
@@ -239,6 +258,22 @@ func ParseEnv(raw string) (apikey.Env, error) {
 	default:
 		return "", fmt.Errorf(`must be "live" or "test", got %q`, raw)
 	}
+}
+
+func validateWebhook(raw string) (string, error) {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", errors.New("must be an absolute http(s) URL")
+	}
+	host := u.Hostname()
+	if u.Scheme != "https" && host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return "", errors.New("must be https (providers reject a public http webhook)")
+	}
+	return raw, nil
 }
 
 func validateRedirectURL(raw string) error {

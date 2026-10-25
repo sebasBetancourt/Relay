@@ -21,9 +21,12 @@ import (
 	"github.com/sebasBetancourt/relay/internal/config"
 	"github.com/sebasBetancourt/relay/internal/httpapi"
 	"github.com/sebasBetancourt/relay/internal/janitor"
+	"github.com/sebasBetancourt/relay/internal/notify"
 	"github.com/sebasBetancourt/relay/internal/oauth"
+	"github.com/sebasBetancourt/relay/internal/queue"
 	"github.com/sebasBetancourt/relay/internal/refresher"
 	"github.com/sebasBetancourt/relay/internal/store"
+	syncsvc "github.com/sebasBetancourt/relay/internal/sync"
 	"github.com/sebasBetancourt/relay/internal/vault"
 )
 
@@ -83,6 +86,55 @@ func main() {
 	})
 	calendarSvc := calendar.NewService(oauthSvc, sources)
 
+	var (
+		natsClient *queue.Client
+		notifySvc  *notify.Service
+		syncSvc    *syncsvc.Service
+	)
+	if cfg.NATSURL != "" {
+		natsClient, err = queue.Connect(context.Background(), cfg.NATSURL)
+		if err != nil {
+			log.Error("nats connect failed", "err", err)
+			os.Exit(1)
+		}
+	}
+	if cfg.WebhookBaseURL == "" {
+		log.Info("calendar push disabled", "reason", "WEBHOOK_BASE_URL is unset; staying on polling")
+	} else {
+		notifyHTTP := &http.Client{Timeout: 20 * time.Second}
+		pushProviders := map[string]notify.Provider{}
+		if cfg.Google != nil {
+			pushProviders["google"] = notify.NewGoogle(notifyHTTP)
+		}
+		if cfg.Microsoft != nil {
+			pushProviders["microsoft"] = notify.NewMicrosoft(notifyHTTP)
+		}
+		notifySvc = notify.New(notify.Deps{
+			Log: log, Accounts: accounts, Tokens: oauthSvc,
+			Subs: store.NewSubscriptions(pool), Providers: pushProviders,
+			Publish: natsClient, BaseURL: cfg.WebhookBaseURL,
+		})
+		oauthSvc.UsePush(notifySvc)
+		log.Info("calendar push enabled", "base_url", cfg.WebhookBaseURL)
+	}
+	if natsClient == nil {
+		log.Info("delta sync disabled", "reason", "NATS_URL is unset; events stay on demand")
+	} else {
+		sources := map[string]syncsvc.DeltaSource{}
+		if cfg.Google != nil {
+			sources["google"] = syncsvc.NewGoogle(apiHTTP)
+		}
+		if cfg.Microsoft != nil {
+			sources["microsoft"] = syncsvc.NewMicrosoft(apiHTTP)
+		}
+		syncSvc = syncsvc.New(syncsvc.Deps{
+			Log: log, Accounts: accounts, Tokens: oauthSvc,
+			Store: store.NewSyncStore(pool), Sources: sources, Publish: natsClient,
+		})
+		oauthSvc.UseSync(syncSvc)
+		log.Info("delta sync enabled")
+	}
+
 	deps := httpapi.Deps{
 		Log:      log,
 		DB:       pool,
@@ -94,6 +146,9 @@ func main() {
 
 		Accounts:   accounts,
 		Disconnect: oauthSvc,
+	}
+	if notifySvc != nil {
+		deps.Webhooks = notifySvc
 	}
 
 	srv := &http.Server{
@@ -110,6 +165,12 @@ func main() {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(2)
+	if notifySvc != nil {
+		wg.Add(2)
+	}
+	if syncSvc != nil {
+		wg.Add(2)
+	}
 	go func() {
 		defer wg.Done()
 		janitor.Run(bgCtx, janitor.Config{
@@ -130,6 +191,36 @@ func main() {
 			Concurrency: cfg.RefreshConcurrency,
 		})
 	}()
+	if notifySvc != nil {
+		go func() {
+			defer wg.Done()
+			notify.Run(bgCtx, notify.Config{
+				Log: log, Claims: store.NewSubscriptions(pool), Maintain: notifySvc,
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			if err := natsClient.RunLifecycle(bgCtx, notify.SubjectLifecycle, func(ctx context.Context, job queue.Lifecycle) error {
+				return notifySvc.HandleLifecycle(ctx, job.AccountID, job.Action)
+			}); err != nil && bgCtx.Err() == nil {
+				log.Error("subscription lifecycle consumer stopped", "err", err)
+			}
+		}()
+	}
+	if syncSvc != nil {
+		go func() {
+			defer wg.Done()
+			syncsvc.Run(bgCtx, syncsvc.ScheduleConfig{
+				Log: log, Claims: store.NewSyncStore(pool), Publish: natsClient,
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			if err := natsClient.RunSync(bgCtx, notify.SubjectSync, syncSvc.Sync); err != nil && bgCtx.Err() == nil {
+				log.Error("calendar sync consumer stopped", "err", err)
+			}
+		}()
+	}
 
 	go func() {
 		log.Info("starting relay api", "version", buildinfo.Version, "port", cfg.Port, "env", cfg.Env, "providers", cfg.Providers())
@@ -151,6 +242,9 @@ func main() {
 	}
 	bgCancel()
 	wg.Wait()
+	if natsClient != nil {
+		natsClient.Close()
+	}
 	pool.Close()
 	log.Info("bye")
 }
