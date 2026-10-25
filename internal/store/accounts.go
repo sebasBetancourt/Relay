@@ -429,8 +429,9 @@ func (s *Accounts) ListForTenant(ctx context.Context, tenantID string, limit int
 }
 
 // Disconnect marks the tenant's account as disconnected and deletes its
-// tokens in one transaction, returning the account as it was (tokens
-// included) so the caller can revoke them at the provider afterwards.
+// tokens, synced events and sync cursor in one transaction, returning the
+// account as it was (tokens included) so the caller can revoke them at
+// the provider afterwards.
 // Missing, wrong-tenant and non-uuid ids → ErrNotFound. Disconnecting an
 // already disconnected account succeeds (the returned Status says so).
 //
@@ -479,6 +480,14 @@ func (s *Accounts) Disconnect(ctx context.Context, accountID, tenantID string) (
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM oauth_tokens WHERE account_id = $1`, accountID); err != nil {
 		return StoredAccount{}, fmt.Errorf("disconnect: tokens: %w", err)
+	}
+	// The account row stays (status=disconnected), so CASCADE does not
+	// run. The calendar copy and its cursor are deleted here.
+	if _, err := tx.Exec(ctx, `DELETE FROM synced_events WHERE account_id = $1`, accountID); err != nil {
+		return StoredAccount{}, fmt.Errorf("disconnect: events: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM account_sync_state WHERE account_id = $1`, accountID); err != nil {
+		return StoredAccount{}, fmt.Errorf("disconnect: sync: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return StoredAccount{}, fmt.Errorf("disconnect: commit: %w", err)
