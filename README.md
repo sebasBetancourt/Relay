@@ -34,6 +34,7 @@ curl -H "Authorization: Bearer $RELAY_KEY" \
 | Detect revoked access (`409`, reconnect) | ✅ | ✅ (including MFA / Conditional Access) |
 | Disconnect an account | ✅ (token revoked at Google) | ✅ |
 | Push when a calendar changes (optional) | ✅ watch channel | ✅ Graph subscription |
+| Incremental sync (stored copy; the read API still calls the provider) | ✅ `syncToken` | ✅ `deltaLink` |
 
 - **Secure by default.**
   - OAuth tokens are encrypted with AES-256-GCM, each value bound to its tenant, account and column.
@@ -149,7 +150,7 @@ Set through environment variables (see [`.env.example`](.env.example)). The API 
 | `MICROSOFT_EXPIRATION_DATE` | no | Client secret expiry (`YYYY-MM-DD`): warns 30 days before, refuses to start after |
 | `PORT`, `LOG_LEVEL` | no | `8080`, `info` |
 | `WEBHOOK_BASE_URL` | no | Public `https` origin for calendar push. Empty keeps polling |
-| `NATS_URL` | with webhooks | JetStream, for example `nats://nats:4222` |
+| `NATS_URL` | no | JetStream. Required when `WEBHOOK_BASE_URL` is set. When set, delta sync consumes `relay.sync.account`. Empty leaves both the queue and delta sync off |
 
 ## Documentation
 

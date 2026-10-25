@@ -158,14 +158,14 @@ curl -i -X DELETE -H "Authorization: Bearer $(cat acme.key)" localhost:8080/v1/a
 ```
 
 - `GET /v1/accounts`: `limit` 1–100 (default 50). Pass `cursor=<next_cursor>` for the next page; the cursor is absent on the last page. `status` is `active`, `revoked` (the provider rejected the refresh token) or `disconnected`.
-- `DELETE /v1/accounts/{id}`: stops the calendar push subscription (best effort), deletes the tokens and marks the account `disconnected` (204). It is idempotent and the account can be connected again.
+- `DELETE /v1/accounts/{id}`: stops the calendar push subscription (best effort), deletes the tokens and the stored calendar copy, and marks the account `disconnected` (204). It is idempotent and the account can be connected again.
   - Google tokens are also revoked at Google (best effort; a Google outage never blocks the disconnect).
   - Microsoft has no per-app revocation endpoint: users remove the app at account.microsoft.com → Privacy → Apps and services.
 - Another tenant's account, or one that does not exist, gives `404 not_found` on both routes.
 
 ## Calendar push
 
-When `WEBHOOK_BASE_URL` is set (a public `https` origin; loopback `http` is accepted for local tests), connecting an account also subscribes Relay to that calendar. Google gets a watch channel; Microsoft Graph gets a subscription on `me/events` (at most 10,080 minutes). The plaintext channel token and `clientState` are never stored, only a SHA-256. Without `WEBHOOK_BASE_URL` the API logs that push is off and keeps serving events on demand. `NATS_URL` is required only when push is on.
+When `WEBHOOK_BASE_URL` is set (a public `https` origin; loopback `http` is accepted for local tests), connecting an account also subscribes Relay to that calendar. Google gets a watch channel; Microsoft Graph gets a subscription on `me/events` (at most 10,080 minutes). The plaintext channel token and `clientState` are never stored, only a SHA-256. Without `WEBHOOK_BASE_URL` the API logs that push is off and keeps serving events on demand. `NATS_URL` is required when push is on. When `NATS_URL` is set on its own, delta sync still runs and push stays off.
 
 These routes are public. They check the per-subscription secret, publish `relay.sync.account` (or a lifecycle job) and return. They do not call the provider.
 
@@ -177,4 +177,10 @@ These routes are public. They check the per-subscription secret, publish `relay.
 
 A background pass renews anything that expires within 24 hours (Graph: `PATCH`; Google: a new channel, then `channels.stop` on the old one). A provider `5xx` leaves the row in place and the next pass retries. Duplicate deliveries of the same notification collapse to one JetStream message (`Nats-Msg-Id`). The body is limited to 64 KiB, and each address is limited to 120 requests a minute. Per-tenant limits are still to come.
 
-Notifications only mean "sync this account". They are not a list of changes. A missed notification is covered by periodic delta sync, which is a separate piece of work.
+Notifications only mean "sync this account". They are not a list of changes. Delta sync ([ADR 0008](adr/0008-delta-sync.md)) turns each job into the added, updated and removed events since the stored cursor. `GET /v1/calendars/{id}/events` still reads the provider; the stored copy is not the read API.
+
+## Delta sync
+
+Connecting an account enqueues its first sync. A worker also enqueues active accounts whose last sync is older than 15 minutes, so a missed webhook still lands. Google uses a `syncToken`. Microsoft Graph uses `calendarView/delta`, and Relay follows `@odata.nextLink` only when the host is the configured Graph host. An expired cursor is HTTP 410: Relay throws it away and does a full sync of the same window. A different window is a full sync too, because both providers bind the cursor to the original range (30 days, the same default as the events read).
+
+Each event is upserted by `(account_id, provider_event_id)` and rewritten only when its etag or `changeKey` changed. A removal sets `deleted` instead of dropping the row. The new cursor is committed in that same transaction. One account syncs at a time (`SELECT … FOR UPDATE`). Disconnect deletes the copy and the cursor. The cursor is never logged.
