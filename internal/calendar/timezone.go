@@ -7,6 +7,11 @@ import (
 
 //go:generate go run gen_windowszones.go
 
+// Zone turns a Microsoft Graph time zone name into an IANA name.
+// Unknown names give "" (never a guess). Delta sync uses the same map
+// as the live events read.
+func Zone(name string) string { return ianaZone(name) }
+
 // ianaZone turns a Microsoft Graph time zone name into an IANA name.
 // Graph returns Windows names ("SA Pacific Standard Time"), sometimes IANA
 // names, or its own markers. Unknown names give "" (never a guess).
