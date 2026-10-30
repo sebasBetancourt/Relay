@@ -3,12 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebasBetancourt/relay/internal/apikey"
+	"github.com/sebasBetancourt/relay/internal/queue"
+	"github.com/sebasBetancourt/relay/internal/queue/natsq"
 	"github.com/sebasBetancourt/relay/internal/store"
+	"github.com/sebasBetancourt/relay/internal/testutil/natsjs"
 )
 
 func envFrom(m map[string]string) func(string) string {
@@ -26,6 +31,12 @@ func TestRunUsageErrors(t *testing.T) {
 	}{
 		{"no args", nil, okEnv, "Usage:"},
 		{"unknown command", []string{"tenant", "delete"}, okEnv, "Usage:"},
+		{"dlq without action", []string{"dlq"}, okEnv, "Usage:"},
+		{"dlq unknown action", []string{"dlq", "drop"}, okEnv, "Usage:"},
+		{"dlq replay without seq", []string{"dlq", "replay"}, okEnv, "Usage:"},
+		{"dlq replay not a number", []string{"dlq", "replay", "abc"}, okEnv, "positive integer"},
+		{"dlq replay zero", []string{"dlq", "replay", "0"}, okEnv, "positive integer"},
+		{"dlq list missing nats", []string{"dlq", "list"}, map[string]string{}, "NATS_URL is required"},
 		{"missing name", []string{"tenant", "create"}, okEnv, "Usage:"},
 		{"blank name", []string{"tenant", "create", "--name", "   "}, okEnv, "Usage:"},
 		{"extra args", []string{"tenant", "create", "--name", "Acme", "oops"}, okEnv, "Usage:"},
@@ -100,5 +111,86 @@ func TestRunVersion(t *testing.T) {
 	}
 	if !strings.HasPrefix(stdout.String(), "relayctl ") {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestDLQListAndReplay(t *testing.T) {
+	url := natsjs.Start(t)
+	c, err := natsq.Connect(context.Background(), url, natsq.WithMaxDeliver(2),
+		natsq.WithAckWait(20*time.Millisecond), natsq.WithBackOff(20*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan struct{})
+	go func() {
+		_ = c.Consume(ctx, "relay.sync.account", func(context.Context, queue.Message) error {
+			return queue.Permanent(errors.New("account not found"))
+		})
+		close(got)
+	}()
+	body := []byte(`{"account_id":"acct-1"}`)
+	if err := c.Publish(context.Background(), "relay.sync.account", "job-1", body); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		letters, err := c.ListDLQ(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(letters) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("message was not dead-lettered")
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-got:
+	case <-time.After(3 * time.Second):
+		t.Fatal("consumer did not stop")
+	}
+
+	env := envFrom(map[string]string{"NATS_URL": url})
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"dlq", "list"}, &stdout, &stderr, env); code != exitOK {
+		t.Fatalf("list exit %d stderr %s", code, stderr.String())
+	}
+	fields := strings.Split(strings.TrimSpace(stdout.String()), "\t")
+	if len(fields) < 4 || fields[1] != "relay.sync.account" || !strings.Contains(fields[3], "account not found") {
+		t.Fatalf("list stdout %q", stdout.String())
+	}
+	seq := fields[0]
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(context.Background(), []string{"dlq", "replay", seq}, &stdout, &stderr, env); code != exitOK {
+		t.Fatalf("replay exit %d stderr %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "replayed sequence "+seq) {
+		t.Fatalf("stderr %q", stderr.String())
+	}
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	replayed := make(chan []byte, 1)
+	go func() {
+		_ = c.Consume(ctx2, "relay.sync.account", func(_ context.Context, msg queue.Message) error {
+			replayed <- append([]byte(nil), msg.Payload...)
+			return nil
+		})
+	}()
+	select {
+	case payload := <-replayed:
+		if string(payload) != string(body) {
+			t.Fatalf("replayed %s", payload)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("replayed job was not delivered")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/apikey"
 	"github.com/sebasBetancourt/relay/internal/buildinfo"
 	"github.com/sebasBetancourt/relay/internal/config"
+	"github.com/sebasBetancourt/relay/internal/queue/natsq"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
@@ -33,11 +35,17 @@ const (
 
 const usage = `Usage:
   relayctl tenant create --name <name>
+  relayctl dlq list
+  relayctl dlq replay <seq>
   relayctl version
 
 Environment:
-  DATABASE_URL  Postgres connection string
+  DATABASE_URL  Postgres connection string (tenant create)
   RELAY_ENV     live | test (decides rly_live_ or rly_test_ keys)
+  NATS_URL      JetStream URL (dlq list, dlq replay)
+
+dlq list writes one tab-separated row per dead letter:
+  seq, subject, failed_at (RFC3339), error
 `
 
 func main() {
@@ -48,15 +56,30 @@ func main() {
 // run holds all the logic so tests can call it with fake args, env and
 // output instead of spawning a process.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
-	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
-		say(stdout, "relayctl %s\n", buildinfo.String())
-		return exitOK
-	}
-	if len(args) < 2 || args[0] != "tenant" || args[1] != "create" {
+	if len(args) == 0 {
 		say(stderr, usage)
 		return exitUsage
 	}
-	return tenantCreate(ctx, args[2:], stdout, stderr, getenv)
+	switch args[0] {
+	case "version", "--version":
+		if len(args) != 1 {
+			say(stderr, usage)
+			return exitUsage
+		}
+		say(stdout, "relayctl %s\n", buildinfo.String())
+		return exitOK
+	case "tenant":
+		if len(args) < 2 || args[1] != "create" {
+			say(stderr, usage)
+			return exitUsage
+		}
+		return tenantCreate(ctx, args[2:], stdout, stderr, getenv)
+	case "dlq":
+		return dlqCommand(ctx, args[1:], stdout, stderr, getenv)
+	default:
+		say(stderr, usage)
+		return exitUsage
+	}
 }
 
 func tenantCreate(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
@@ -115,6 +138,101 @@ func tenantCreate(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return exitError
 	}
 	return exitOK
+}
+
+func dlqCommand(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	if len(args) == 0 {
+		say(stderr, usage)
+		return exitUsage
+	}
+	switch args[0] {
+	case "list":
+		if len(args) != 1 {
+			say(stderr, usage)
+			return exitUsage
+		}
+		return dlqList(ctx, stdout, stderr, getenv)
+	case "replay":
+		if len(args) != 2 {
+			say(stderr, usage)
+			return exitUsage
+		}
+		seq, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil || seq == 0 {
+			say(stderr, "dlq replay: sequence must be a positive integer\n")
+			return exitUsage
+		}
+		return dlqReplay(ctx, seq, stderr, getenv)
+	default:
+		say(stderr, usage)
+		return exitUsage
+	}
+}
+
+func dlqList(ctx context.Context, stdout, stderr io.Writer, getenv func(string) string) int {
+	c, code := dialNATS(ctx, stderr, getenv)
+	if c == nil {
+		return code
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	letters, err := c.ListDLQ(ctx)
+	if err != nil {
+		say(stderr, "dlq list: %v\n", err)
+		return exitError
+	}
+	if len(letters) == 0 {
+		say(stderr, "DLQ is empty\n")
+		return exitOK
+	}
+	for _, letter := range letters {
+		when := ""
+		if !letter.FailedAt.IsZero() {
+			when = letter.FailedAt.UTC().Format(time.RFC3339)
+		}
+		say(stdout, "%d\t%s\t%s\t%s\n", letter.Seq, letter.Subject, when, oneLine(letter.Error))
+	}
+	return exitOK
+}
+
+func dlqReplay(ctx context.Context, seq uint64, stderr io.Writer, getenv func(string) string) int {
+	c, code := dialNATS(ctx, stderr, getenv)
+	if c == nil {
+		return code
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := c.ReplayDLQ(ctx, seq); err != nil {
+		say(stderr, "dlq replay: %v\n", err)
+		return exitError
+	}
+	say(stderr, "replayed sequence %d\n", seq)
+	return exitOK
+}
+
+func dialNATS(ctx context.Context, stderr io.Writer, getenv func(string) string) (*natsq.Client, int) {
+	url := getenv("NATS_URL")
+	if url == "" {
+		say(stderr, "invalid config: NATS_URL is required\n")
+		return nil, exitUsage
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	c, err := natsq.Connect(ctx, url)
+	if err != nil {
+		say(stderr, "nats connect failed: %v\n", err)
+		return nil, exitError
+	}
+	return c, exitOK
+}
+
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "\t", " ")
 }
 
 // say writes an informational message. Failing to write to stderr leaves
