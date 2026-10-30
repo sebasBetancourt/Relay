@@ -13,6 +13,7 @@ import (
 
 	"github.com/sebasBetancourt/relay/internal/calendar"
 	"github.com/sebasBetancourt/relay/internal/oauth"
+	"github.com/sebasBetancourt/relay/internal/queue"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
@@ -38,10 +39,9 @@ type States interface {
 	MarkError(ctx context.Context, accountID, message string) error
 }
 
-// Publisher enqueues a sync job. *queue.Client implements it.
-type Publisher interface {
-	Publish(ctx context.Context, subject, msgID string, body []byte) error
-}
+// Publisher enqueues a sync job. It is the queue contract: this package does
+// not import the NATS client. *natsq.Client implements it.
+type Publisher = queue.Publisher
 
 // Deps wires Service.
 type Deps struct {
@@ -100,6 +100,21 @@ func (s *Service) Kick(ctx context.Context, accountID string) error {
 	}
 	msgID := "connect:" + accountID + ":" + fmt.Sprintf("%d", time.Now().UnixNano())
 	return s.publish.Publish(ctx, subjectSync, msgID, body)
+}
+
+// HandleJob runs one relay.sync.account payload. Bad JSON is permanent:
+// retrying a body that cannot be read will never succeed.
+func (s *Service) HandleJob(ctx context.Context, msg queue.Message) error {
+	var job struct {
+		AccountID string `json:"account_id"`
+	}
+	if err := json.Unmarshal(msg.Payload, &job); err != nil || job.AccountID == "" {
+		if err == nil {
+			err = errors.New("sync job missing account_id")
+		}
+		return queue.Permanent(err)
+	}
+	return s.Sync(ctx, job.AccountID)
 }
 
 // Sync applies the provider's changes for one account. Inactive accounts

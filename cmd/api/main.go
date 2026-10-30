@@ -23,7 +23,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/janitor"
 	"github.com/sebasBetancourt/relay/internal/notify"
 	"github.com/sebasBetancourt/relay/internal/oauth"
-	"github.com/sebasBetancourt/relay/internal/queue"
+	"github.com/sebasBetancourt/relay/internal/queue/natsq"
 	"github.com/sebasBetancourt/relay/internal/refresher"
 	"github.com/sebasBetancourt/relay/internal/store"
 	syncsvc "github.com/sebasBetancourt/relay/internal/sync"
@@ -87,16 +87,17 @@ func main() {
 	calendarSvc := calendar.NewService(oauthSvc, sources)
 
 	var (
-		natsClient *queue.Client
+		natsClient *natsq.Client
 		notifySvc  *notify.Service
 		syncSvc    *syncsvc.Service
 	)
 	if cfg.NATSURL != "" {
-		natsClient, err = queue.Connect(context.Background(), cfg.NATSURL)
+		natsClient, err = natsq.Connect(context.Background(), cfg.NATSURL, natsq.WithLogger(log))
 		if err != nil {
 			log.Error("nats connect failed", "err", err)
 			os.Exit(1)
 		}
+		log.Info("jetstream enabled")
 	}
 	if cfg.WebhookBaseURL == "" {
 		log.Info("calendar push disabled", "reason", "WEBHOOK_BASE_URL is unset; staying on polling")
@@ -200,9 +201,7 @@ func main() {
 		}()
 		go func() {
 			defer wg.Done()
-			if err := natsClient.RunLifecycle(bgCtx, notify.SubjectLifecycle, func(ctx context.Context, job queue.Lifecycle) error {
-				return notifySvc.HandleLifecycle(ctx, job.AccountID, job.Action)
-			}); err != nil && bgCtx.Err() == nil {
+			if err := natsClient.Consume(bgCtx, notify.SubjectLifecycle, notifySvc.HandleJob); err != nil && bgCtx.Err() == nil {
 				log.Error("subscription lifecycle consumer stopped", "err", err)
 			}
 		}()
@@ -216,7 +215,7 @@ func main() {
 		}()
 		go func() {
 			defer wg.Done()
-			if err := natsClient.RunSync(bgCtx, notify.SubjectSync, syncSvc.Sync); err != nil && bgCtx.Err() == nil {
+			if err := natsClient.Consume(bgCtx, notify.SubjectSync, syncSvc.HandleJob); err != nil && bgCtx.Err() == nil {
 				log.Error("calendar sync consumer stopped", "err", err)
 			}
 		}()
@@ -243,7 +242,10 @@ func main() {
 	bgCancel()
 	wg.Wait()
 	if natsClient != nil {
-		natsClient.Close()
+		if err := natsClient.Drain(); err != nil {
+			log.Error("nats drain failed", "err", err)
+			natsClient.Close()
+		}
 	}
 	pool.Close()
 	log.Info("bye")

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/sebasBetancourt/relay/internal/notify"
-	"github.com/sebasBetancourt/relay/internal/queue"
+	"github.com/sebasBetancourt/relay/internal/queue/natsq"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakegoogle"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakemicrosoft"
 	"github.com/sebasBetancourt/relay/internal/testutil/natsjs"
@@ -16,7 +16,7 @@ import (
 
 func (f *flow) enableSync(t *testing.T) {
 	t.Helper()
-	c, err := queue.Connect(f.ctx, natsjs.Start(t), queue.WithMemory())
+	c, err := natsq.Connect(f.ctx, natsjs.Start(t), natsq.WithMemory())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func (f *flow) enableSync(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() {
-		_ = c.RunSync(ctx, notify.SubjectSync, f.syncSvc.Sync)
+		_ = c.Consume(ctx, notify.SubjectSync, f.syncSvc.HandleJob)
 	}()
 }
 

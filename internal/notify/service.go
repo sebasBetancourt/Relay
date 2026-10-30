@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sebasBetancourt/relay/internal/oauth"
+	"github.com/sebasBetancourt/relay/internal/queue"
 	"github.com/sebasBetancourt/relay/internal/store"
 )
 
@@ -41,10 +43,9 @@ type Subscriptions interface {
 	ClaimMissing(ctx context.Context, limit int, fn func(ids []string) error) error
 }
 
-// Publisher enqueues a job. *queue.Client implements it.
-type Publisher interface {
-	Publish(ctx context.Context, subject, msgID string, body []byte) error
-}
+// Publisher enqueues a job. It is the queue contract: this package does not
+// import the NATS client. *natsq.Client implements it.
+type Publisher = queue.Publisher
 
 // Deps wires Service. HTTP clients live on the providers.
 type Deps struct {
@@ -185,6 +186,19 @@ func (s *Service) Stop(ctx context.Context, accountID string) error {
 	}
 	s.log.Info("calendar subscription stopped", "account_id", accountID, "provider", sub.Provider)
 	return nil
+}
+
+// HandleJob runs one lifecycle payload from the queue. A body that is not
+// the expected JSON is permanent, so it is dead-lettered instead of retried.
+func (s *Service) HandleJob(ctx context.Context, msg queue.Message) error {
+	var job lifeMessage
+	if err := json.Unmarshal(msg.Payload, &job); err != nil || job.AccountID == "" {
+		if err == nil {
+			err = errors.New("lifecycle job missing account_id")
+		}
+		return queue.Permanent(err)
+	}
+	return s.HandleLifecycle(ctx, job.AccountID, job.Action)
 }
 
 // HandleLifecycle runs a job the webhook enqueued: renew or create again.

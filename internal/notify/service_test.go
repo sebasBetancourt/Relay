@@ -9,10 +9,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebasBetancourt/relay/internal/queue"
 	"github.com/sebasBetancourt/relay/internal/store"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakegoogle"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakemicrosoft"
 )
+
+func TestHandleJobRejectsBadPayload(t *testing.T) {
+	svc := New(Deps{})
+	err := svc.HandleJob(context.Background(), queue.Message{Payload: []byte(`{`)})
+	if !queue.IsPermanent(err) {
+		t.Fatalf("err = %v, want permanent", err)
+	}
+	err = svc.HandleJob(context.Background(), queue.Message{Payload: []byte(`{}`)})
+	if !queue.IsPermanent(err) {
+		t.Fatalf("missing account_id: %v", err)
+	}
+}
 
 func TestSubscribeRenewAndStopGoogle(t *testing.T) {
 	g := fakegoogle.New(t, fakegoogle.Options{})

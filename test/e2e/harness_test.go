@@ -25,7 +25,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/httpapi"
 	"github.com/sebasBetancourt/relay/internal/notify"
 	"github.com/sebasBetancourt/relay/internal/oauth"
-	"github.com/sebasBetancourt/relay/internal/queue"
+	"github.com/sebasBetancourt/relay/internal/queue/natsq"
 	"github.com/sebasBetancourt/relay/internal/store"
 	"github.com/sebasBetancourt/relay/internal/sync"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakegoogle"
@@ -70,7 +70,7 @@ type flow struct {
 	router      http.Handler
 	key         apikey.Key
 	tenant      store.Tenant
-	nats        *queue.Client
+	nats        *natsq.Client
 	webhookBase string
 	syncOn      bool
 	syncSvc     *sync.Service

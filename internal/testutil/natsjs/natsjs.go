@@ -12,6 +12,14 @@ import (
 // Start runs JetStream on 127.0.0.1 and returns a client URL.
 func Start(t *testing.T) string {
 	t.Helper()
+	return StartServer(t).ClientURL()
+}
+
+// StartServer runs JetStream on 127.0.0.1. Tests that need to kill the
+// broker (publish-while-down) shut this server down themselves; cleanup
+// still runs Shutdown, which is safe to call twice.
+func StartServer(t *testing.T) *server.Server {
+	t.Helper()
 	opts := &server.Options{
 		Host:      "127.0.0.1",
 		Port:      -1,
@@ -32,5 +40,5 @@ func Start(t *testing.T) string {
 	if !s.ReadyForConnections(5 * time.Second) {
 		t.Fatal("nats not ready")
 	}
-	return s.ClientURL()
+	return s
 }

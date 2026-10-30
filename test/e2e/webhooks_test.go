@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/sebasBetancourt/relay/internal/notify"
-	"github.com/sebasBetancourt/relay/internal/queue"
+	"github.com/sebasBetancourt/relay/internal/queue/natsq"
 	"github.com/sebasBetancourt/relay/internal/testutil/natsjs"
 )
 
@@ -19,7 +19,7 @@ import (
 // validation handshake.
 func (f *flow) enablePush(t *testing.T) {
 	t.Helper()
-	c, err := queue.Connect(f.ctx, natsjs.Start(t), queue.WithMemory())
+	c, err := natsq.Connect(f.ctx, natsjs.Start(t), natsq.WithMemory())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,12 +93,15 @@ func TestPushSubscribeNotifyDisconnect(t *testing.T) {
 			if len(msgs) != 1 || !strings.Contains(string(msgs[0]), accountID) {
 				t.Fatalf("messages %s", msgs)
 			}
+			if n, _ = f.nats.Pending(f.ctx); n != 0 {
+				t.Fatalf("acked job still queued, pending %d", n)
+			}
 
 			wrong := f.postWebhook(provider, "wrong-secret", "3")
 			if wrong.Code != http.StatusUnauthorized {
 				t.Fatalf("bad secret %d %s", wrong.Code, wrong.Body.String())
 			}
-			if n, _ = f.nats.Pending(f.ctx); n != 1 {
+			if n, _ = f.nats.Pending(f.ctx); n != 0 {
 				t.Fatalf("bad secret queued a message, pending %d", n)
 			}
 

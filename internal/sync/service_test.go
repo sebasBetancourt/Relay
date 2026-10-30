@@ -12,6 +12,7 @@ import (
 
 	"github.com/sebasBetancourt/relay/internal/notify"
 	"github.com/sebasBetancourt/relay/internal/oauth"
+	"github.com/sebasBetancourt/relay/internal/queue"
 	"github.com/sebasBetancourt/relay/internal/store"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakegoogle"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakemicrosoft"
@@ -20,6 +21,18 @@ import (
 func TestSubjectMatchesWebhook(t *testing.T) {
 	if subjectSync != notify.SubjectSync {
 		t.Fatalf("subject = %q, webhook publishes %q", subjectSync, notify.SubjectSync)
+	}
+}
+
+func TestHandleJobRejectsBadPayload(t *testing.T) {
+	svc := New(Deps{})
+	err := svc.HandleJob(context.Background(), queue.Message{Payload: []byte(`{`)})
+	if !queue.IsPermanent(err) {
+		t.Fatalf("err = %v, want permanent", err)
+	}
+	err = svc.HandleJob(context.Background(), queue.Message{Payload: []byte(`{}`)})
+	if !queue.IsPermanent(err) {
+		t.Fatalf("missing account_id: %v", err)
 	}
 }
 

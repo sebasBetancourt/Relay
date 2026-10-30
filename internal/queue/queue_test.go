@@ -1,71 +1,47 @@
 package queue
 
 import (
-	"context"
+	"errors"
+	"fmt"
 	"testing"
-	"time"
-
-	"github.com/sebasBetancourt/relay/internal/testutil/natsjs"
 )
 
-func TestPublishDedupesOnMsgID(t *testing.T) {
-	ctx := context.Background()
-	c, err := Connect(ctx, natsjs.Start(t), WithMemory())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(c.Close)
+func TestOutcomeFor(t *testing.T) {
+	boom := errors.New("timeout")
+	gone := Permanent(errors.New("account not found"))
 
-	const subject = "relay.sync.account"
-	body := []byte(`{"account_id":"acct-1","provider":"google"}`)
-	if err := c.Publish(ctx, subject, "google:ch-1:4", body); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name      string
+		err       error
+		delivered uint64
+		max       uint64
+		want      Outcome
+	}{
+		{"success", nil, 1, 5, OutcomeAck},
+		{"transient first try", boom, 1, 5, OutcomeRetry},
+		{"transient before the cap", boom, 4, 5, OutcomeRetry},
+		{"transient at the cap", boom, 5, 5, OutcomeDead},
+		{"permanent on the first try", gone, 1, 5, OutcomeDead},
+		{"wrapped permanent", fmt.Errorf("sync: %w", gone), 1, 5, OutcomeDead},
 	}
-	if err := c.Publish(ctx, subject, "google:ch-1:4", body); err != nil {
-		t.Fatal(err)
-	}
-	n, err := c.Pending(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("messages = %d, want 1", n)
-	}
-	got, err := c.Collect(ctx, subject, 5, 300*time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || string(got[0]) != string(body) {
-		t.Fatalf("collected %#v", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := OutcomeFor(tt.err, tt.delivered, tt.max); got != tt.want {
+				t.Fatalf("outcome = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestRunSyncDeliversAccount(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c, err := Connect(ctx, natsjs.Start(t), WithMemory())
-	if err != nil {
-		t.Fatal(err)
+func TestPermanentNil(t *testing.T) {
+	if err := Permanent(nil); err != nil {
+		t.Fatalf("Permanent(nil) = %v", err)
 	}
-	t.Cleanup(c.Close)
-
-	const subject = "relay.sync.account"
-	if err := c.Publish(ctx, subject, "job-1", []byte(`{"account_id":"acct-9"}`)); err != nil {
-		t.Fatal(err)
+	err := Permanent(errors.New("bad json"))
+	if Permanent(err) != err {
+		t.Fatal("wrapping twice should keep the same error")
 	}
-	got := make(chan string, 1)
-	go func() {
-		_ = c.RunSync(ctx, subject, func(_ context.Context, id string) error {
-			got <- id
-			return nil
-		})
-	}()
-	select {
-	case id := <-got:
-		if id != "acct-9" {
-			t.Fatalf("id = %q", id)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("sync consumer did not deliver")
+	if !IsPermanent(fmt.Errorf("job: %w", err)) {
+		t.Fatal("permanent marker was lost")
 	}
 }
