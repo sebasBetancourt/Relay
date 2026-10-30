@@ -8,7 +8,7 @@ All notable changes to Relay are documented here. The format follows
 
 ### Added
 
-- Background refresher renews access tokens before they expire (`REFRESH_AHEAD`, `REFRESH_CONCURRENCY`). Replica safety stays on the Postgres row lock; batches are claimed with `FOR UPDATE SKIP LOCKED` ([ADR 0006](docs/adr/0006-background-refresh.md)).
+- Durable jobs on NATS JetStream (`RELAY_JOBS`): dedupe by `Nats-Msg-Id`, backoff, and a dead-letter stream (`RELAY_DLQ`) after five attempts. `relayctl dlq list` and `relayctl dlq replay` inspect and requeue them. Async work stays off, and the API says so, when `NATS_URL` is unset ([ADR 0003](docs/adr/0003-use-nats-jetstream.md)).
 - Calendar push: connecting an account subscribes to a Google watch channel or a Microsoft Graph subscription. Public webhooks verify a per-subscription secret, enqueue `relay.sync.account` on NATS JetStream and answer inside Graph's 3 second window. A worker renews subscriptions that expire within 24 hours. Push stays off when `WEBHOOK_BASE_URL` is unset ([ADR 0007](docs/adr/0007-calendar-push.md)).
 - Delta sync: a consumer applies Google `syncToken` and Graph `deltaLink` changes idempotently, commits the new cursor in the same transaction, and full-syncs on HTTP 410. A 15-minute pass covers missed webhooks. `GET /v1/calendars/{id}/events` still reads the provider ([ADR 0008](docs/adr/0008-delta-sync.md)).
 

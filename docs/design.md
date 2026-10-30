@@ -178,6 +178,8 @@ Push (optional, `WEBHOOK_BASE_URL`) does not replace this read. On connect, Rela
 
 Delta sync is the consumer of that job, and of a 15-minute pass over accounts whose `last_synced_at` is older than that. It stores a cursor (`syncToken` or `deltaLink`) and a normalized copy of events. A change is an upsert keyed by provider event id and version; a removal is `deleted = true`. The new cursor commits in the same transaction as the rows, under `SELECT … FOR UPDATE`, so two workers cannot apply the same account at once and a crash retries from the old cursor. HTTP 410 drops the cursor and runs a full sync. `GET /v1/calendars/{id}/events` still calls the provider; switching that read to the copy is a later decision ([ADR 0008](adr/0008-delta-sync.md)). `NATS_URL` empty disables the consumer and the pass. Disconnect deletes the copy.
 
+The queue itself is `queue.Publisher` and `queue.Consumer`. NATS JetStream is the implementation ([ADR 0003](adr/0003-use-nats-jetstream.md)): `RELAY_JOBS` is a work queue on disk, a repeated `Nats-Msg-Id` inside two minutes is stored once, and a handler error is retried with backoff. The fifth failure, or a permanent one (the body is not JSON, for example), is written to `RELAY_DLQ` and removed from the work queue. `relayctl dlq list` and `relayctl dlq replay <seq>` inspect and requeue those. Delivery is at least once, so handlers stay idempotent. SIGTERM cancels the workers, waits for the handler already running, drains NATS, then closes the database pool.
+
 ### Data model
 
 #### tenants

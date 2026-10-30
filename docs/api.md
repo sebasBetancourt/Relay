@@ -165,7 +165,7 @@ curl -i -X DELETE -H "Authorization: Bearer $(cat acme.key)" localhost:8080/v1/a
 
 ## Calendar push
 
-When `WEBHOOK_BASE_URL` is set (a public `https` origin; loopback `http` is accepted for local tests), connecting an account also subscribes Relay to that calendar. Google gets a watch channel; Microsoft Graph gets a subscription on `me/events` (at most 10,080 minutes). The plaintext channel token and `clientState` are never stored, only a SHA-256. Without `WEBHOOK_BASE_URL` the API logs that push is off and keeps serving events on demand. `NATS_URL` is required when push is on. When `NATS_URL` is set on its own, delta sync still runs and push stays off.
+When `WEBHOOK_BASE_URL` is set (a public `https` origin; loopback `http` is accepted for local tests), connecting an account also subscribes Relay to that calendar. Google gets a watch channel; Microsoft Graph gets a subscription on `me/events` (at most 10,080 minutes). The plaintext channel token and `clientState` are never stored, only a SHA-256. Without `WEBHOOK_BASE_URL` the API logs that push is off and keeps serving events on demand. `NATS_URL` is required when push is on. When `NATS_URL` is set on its own, delta sync still runs and push stays off. A job that still fails after its retries is kept on the dead-letter stream; `relayctl dlq list` shows it and `relayctl dlq replay <seq>` queues it again.
 
 These routes are public. They check the per-subscription secret, publish `relay.sync.account` (or a lifecycle job) and return. They do not call the provider.
 
