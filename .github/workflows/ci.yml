@@ -33,6 +33,7 @@ jobs:
     env:
       DATABASE_URL: postgres://relay:relay@localhost:5432/relay?sslmode=disable
       TEST_DATABASE_URL: postgres://relay:relay@localhost:5432/relay?sslmode=disable
+      NATS_URL: nats://127.0.0.1:4222
 
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +41,24 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - name: Start NATS JetStream
+        # Service containers cannot pass -js: GitHub Actions has no command
+        # override, and they start before checkout so a config file cannot
+        # be mounted. The official image enables JetStream only with -js.
+        run: |
+          docker run -d --name nats -p 4222:4222 -p 8222:8222 \
+            nats:2.11.17-alpine -js -m 8222 -sd /data
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8222/healthz >/dev/null && curl -sf http://127.0.0.1:8222/jsz >/dev/null; then
+              echo "NATS JetStream is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs nats || true
+          echo "NATS did not become healthy" >&2
+          exit 1
 
       - name: Vet
         run: go vet ./...

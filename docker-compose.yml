@@ -56,10 +56,12 @@ services:
         condition: service_started
 
   nats:
-    image: nats:2.11-alpine
-    command: ["-js", "-m", "8222"]
+    image: nats:2.11.17-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
     ports:
       - "4222:4222"
+    volumes:
+      - natsdata:/data
 
   # UI for Postgres: docker compose --profile tools up -d adminer
   # Open http://localhost:8081  → System: PostgreSQL, Server: postgres, User/Pass/DB: relay
@@ -74,3 +76,4 @@ services:
 
 volumes:
   pgdata:
+  natsdata:
