@@ -20,10 +20,12 @@ import (
 	"github.com/sebasBetancourt/relay/internal/calendar"
 	"github.com/sebasBetancourt/relay/internal/config"
 	"github.com/sebasBetancourt/relay/internal/httpapi"
+	"github.com/sebasBetancourt/relay/internal/httpapi/middleware"
 	"github.com/sebasBetancourt/relay/internal/janitor"
 	"github.com/sebasBetancourt/relay/internal/notify"
 	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/queue/natsq"
+	"github.com/sebasBetancourt/relay/internal/ratelimit"
 	"github.com/sebasBetancourt/relay/internal/refresher"
 	"github.com/sebasBetancourt/relay/internal/store"
 	syncsvc "github.com/sebasBetancourt/relay/internal/sync"
@@ -136,6 +138,22 @@ func main() {
 		log.Info("delta sync enabled")
 	}
 
+	var (
+		limiter ratelimit.Limiter = ratelimit.NewLocal()
+		redis   *ratelimit.Redis
+	)
+	if cfg.RedisURL == "" {
+		log.Warn("rate limit is per replica", "reason", "REDIS_URL is unset; with N replicas the limit is N times higher")
+	} else {
+		redis, err = ratelimit.OpenRedis(cfg.RedisURL)
+		if err != nil {
+			log.Error("redis config failed", "err", err)
+			os.Exit(1)
+		}
+		limiter = ratelimit.NewFailover(log, redis, limiter)
+		log.Info("rate limit shared through redis")
+	}
+
 	deps := httpapi.Deps{
 		Log:      log,
 		DB:       pool,
@@ -147,6 +165,10 @@ func main() {
 
 		Accounts:   accounts,
 		Disconnect: oauthSvc,
+		RateLimit: middleware.NewRateLimiter(log, limiter,
+			ratelimit.Limit{PerMinute: cfg.RateLimitPerMinute, Burst: cfg.RateLimitBurst},
+			ratelimit.Limit{PerMinute: cfg.RateLimitIPPerMinute, Burst: cfg.RateLimitIPBurst},
+		),
 	}
 	if notifySvc != nil {
 		deps.Webhooks = notifySvc
@@ -245,6 +267,11 @@ func main() {
 		if err := natsClient.Drain(); err != nil {
 			log.Error("nats drain failed", "err", err)
 			natsClient.Close()
+		}
+	}
+	if redis != nil {
+		if err := redis.Close(); err != nil {
+			log.Warn("redis close failed", "err", err)
 		}
 	}
 	pool.Close()

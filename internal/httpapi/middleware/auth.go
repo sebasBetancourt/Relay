@@ -27,8 +27,9 @@ func TenantFromContext(ctx context.Context) (store.Tenant, bool) {
 // RequireAPIKey authenticates "Authorization: Bearer rly_..." and puts the
 // tenant in the request context. Every client-side failure gets the same
 // 401 body so callers learn nothing about why; the reason only goes to logs.
-// The key itself is never logged.
-func RequireAPIKey(log *slog.Logger, lookup TenantLookup, env apikey.Env) func(http.Handler) http.Handler {
+// The key itself is never logged. Rejected requests count against the
+// caller's IP budget in rl, which may be nil, and turn into a 429 past it.
+func RequireAPIKey(log *slog.Logger, lookup TenantLookup, env apikey.Env, rl *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			reject := func(reason string) {
@@ -37,6 +38,9 @@ func RequireAPIKey(log *slog.Logger, lookup TenantLookup, env apikey.Env) func(h
 					"path", r.URL.Path,
 					"request_id", RequestIDFromContext(r.Context()),
 				)
+				if rl.rejectedKey(w, r) {
+					return
+				}
 				w.Header().Set("WWW-Authenticate", `Bearer realm="relay"`)
 				writeError(w, http.StatusUnauthorized, "unauthorized")
 			}

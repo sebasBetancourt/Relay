@@ -95,7 +95,7 @@ func TestRequireAPIKey(t *testing.T) {
 				req.Header.Set("Authorization", tt.header)
 			}
 			rec := httptest.NewRecorder()
-			RequireAPIKey(discardLogger(), lookup, apikey.EnvTest)(next).ServeHTTP(rec, req)
+			RequireAPIKey(discardLogger(), lookup, apikey.EnvTest, nil)(next).ServeHTTP(rec, req)
 
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d (body %q)", rec.Code, tt.wantStatus, rec.Body.String())

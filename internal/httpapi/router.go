@@ -28,6 +28,8 @@ type Deps struct {
 	// Webhooks receives provider push notifications. Nil leaves push off;
 	// those paths then fall through to API-key auth like any other /v1 route.
 	Webhooks Webhooks
+	// RateLimit budgets requests per tenant and per IP. Nil limits nothing.
+	RateLimit *middleware.RateLimiter
 }
 
 // Webhooks is the public push surface. *notify.Service implements it.
@@ -38,7 +40,7 @@ type Webhooks interface {
 }
 
 func NewRouter(d Deps) http.Handler {
-	log, db := d.Log, d.DB
+	log, db, rl := d.Log, d.DB, d.RateLimit
 	mux := http.NewServeMux()
 
 	// Public: probes from Docker/Kubernetes carry no API key.
@@ -61,11 +63,13 @@ func NewRouter(d Deps) http.Handler {
 
 	// Public OAuth callback: the browser returns from the provider without an
 	// API key. Go 1.22+ picks this more-specific pattern over the /v1/ catch-all.
-	mux.HandleFunc("GET /v1/oauth/{provider}/callback", handleCallback(log, d.Callback))
+	mux.Handle("GET /v1/oauth/{provider}/callback", rl.PerIP(handleCallback(log, d.Callback)))
 
 	// Public provider webhooks. Same routing rule as the callback: no API key.
 	// The per-subscription secret is the credential. Registered only when push
 	// is configured, so a deployment without WEBHOOK_BASE_URL does not advertise them.
+	// notify limits them per IP itself, so a flood of bad keys cannot spend the
+	// budget that provider notifications need.
 	if d.Webhooks != nil {
 		mux.HandleFunc("POST /v1/webhooks/google", d.Webhooks.Google)
 		mux.HandleFunc("POST /v1/webhooks/microsoft/lifecycle", d.Webhooks.MicrosoftLifecycle)
@@ -74,14 +78,15 @@ func NewRouter(d Deps) http.Handler {
 
 	// Private: everything under /v1/ requires an API key. Auth runs before
 	// routing, so unknown /v1 paths also answer 401 without a key and do
-	// not reveal which routes exist.
+	// not reveal which routes exist. The rate limit runs after auth because
+	// it needs the tenant; probes above are never limited.
 	v1 := http.NewServeMux()
 	v1.HandleFunc("GET /v1/me", handleMe)
 	v1.HandleFunc("GET /v1/connect/{provider}", handleConnect(log, d.Connect))
 	v1.HandleFunc("GET /v1/calendars/{id}/events", handleListEvents(log, d.Calendar))
 	v1.HandleFunc("GET /v1/accounts", handleListAccounts(log, d.Accounts))
 	v1.HandleFunc("DELETE /v1/accounts/{id}", handleDisconnectAccount(log, d.Disconnect))
-	mux.Handle("/v1/", middleware.RequireAPIKey(log, d.Tenants, d.Env)(v1))
+	mux.Handle("/v1/", middleware.RequireAPIKey(log, d.Tenants, d.Env, rl)(rl.PerTenant(v1)))
 
 	// Outer runs first. middleware.RequestID must wrap Recover/middleware.Logger so they see the id in context.
 	return middleware.RequestID(middleware.Recover(log)(middleware.Logger(log)(mux)))
