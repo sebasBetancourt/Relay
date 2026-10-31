@@ -158,7 +158,7 @@ func TestConnectErrors(t *testing.T) {
 		{"unknown provider", "/v1/connect/yahoo", true, nil, http.StatusBadRequest, `{"error":"unsupported_provider"}`},
 		{"provider not enabled yet", "/v1/connect/microsoft", true, nil, http.StatusBadRequest, `{"error":"unsupported_provider"}`},
 		{"tenant deleted, key still cached", "/v1/connect/google", true, store.ErrNotFound, http.StatusUnauthorized, `{"error":"unauthorized"}`},
-		{"db failure", "/v1/connect/google", true, errors.New("db down"), http.StatusInternalServerError, `{"error":"internal error"}`},
+		{"db failure", "/v1/connect/google", true, errors.New("db down"), http.StatusInternalServerError, `{"error":"internal_error"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

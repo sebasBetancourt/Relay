@@ -86,6 +86,6 @@ func mapCallbackError(err error) (status int, code string) {
 	case errors.Is(err, store.ErrAccountTaken):
 		return http.StatusConflict, "account_already_connected"
 	default:
-		return http.StatusInternalServerError, "internal error"
+		return http.StatusInternalServerError, "internal_error"
 	}
 }

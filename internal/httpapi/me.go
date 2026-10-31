@@ -12,7 +12,7 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
 	t, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
 		// Only possible if the route was mounted without RequireAPIKey.
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {

@@ -74,7 +74,7 @@ func RequireAPIKey(log *slog.Logger, lookup TenantLookup, env apikey.Env, rl *Ra
 					"err", err,
 					"request_id", RequestIDFromContext(r.Context()),
 				)
-				writeError(w, http.StatusInternalServerError, "internal error")
+				writeError(w, http.StatusInternalServerError, "internal_error")
 				return
 			}
 

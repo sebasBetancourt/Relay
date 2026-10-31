@@ -29,7 +29,7 @@ func handleConnect(log *slog.Logger, c Connector) http.HandlerFunc {
 		tenant, ok := middleware.TenantFromContext(r.Context())
 		if !ok {
 			// Only possible if the route was mounted without RequireAPIKey.
-			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 			return
 		}
 		provider := oauth.Provider(r.PathValue("provider"))
@@ -58,7 +58,7 @@ func handleConnect(log *slog.Logger, c Connector) http.HandlerFunc {
 				"provider", provider,
 				"request_id", middleware.RequestIDFromContext(r.Context()),
 			)
-			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 			return
 		}
 

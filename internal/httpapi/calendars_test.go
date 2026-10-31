@@ -138,7 +138,7 @@ func TestListEventsErrorTable(t *testing.T) {
 		{"rate", &calendar.RateLimitedError{RetryAfter: 7 * time.Second}, 429, "provider_rate_limited", "7"},
 		{"unavailable", calendar.ErrProviderUnavailable, 502, "provider_unavailable", ""},
 		{"bad response", calendar.ErrProviderBadResponse, 502, "provider_error", ""},
-		{"internal", errors.New("boom"), 500, "internal error", ""},
+		{"internal", errors.New("boom"), 500, "internal_error", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

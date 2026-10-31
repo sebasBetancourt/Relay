@@ -76,7 +76,7 @@ func TestListAccounts(t *testing.T) {
 	lister := &fakeAccountLister{rows: summaries(3)}
 	router := accountsRouter(t, key, lister, nil)
 
-	rec := doAuthed(router, http.MethodGet, "/v1/accounts?limit=2", key)
+	rec := doAuthed(router, http.MethodGet, "/v1/accounts?max_results=2", key)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
@@ -89,7 +89,7 @@ func TestListAccounts(t *testing.T) {
 
 	var body struct {
 		Accounts []map[string]any `json:"accounts"`
-		Next     string           `json:"next_cursor"`
+		Next     string           `json:"next_page_token"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestListAccounts(t *testing.T) {
 	}
 
 	// The cursor points after the last returned row.
-	rec = doAuthed(router, http.MethodGet, "/v1/accounts?limit=2&cursor="+body.Next, key)
+	rec = doAuthed(router, http.MethodGet, "/v1/accounts?max_results=2&page_token="+body.Next, key)
 	if rec.Code != http.StatusOK || lister.lastAfter == nil ||
 		lister.lastAfter.ID != "acct-b" || !lister.lastAfter.CreatedAt.Equal(summaries(3)[1].ConnectedAt) {
 		t.Fatalf("second page: status %d after %+v", rec.Code, lister.lastAfter)
@@ -127,7 +127,7 @@ func TestListAccountsLastPageAndEmpty(t *testing.T) {
 
 func TestListAccountsInvalidQuery(t *testing.T) {
 	key := apikey.Generate(apikey.EnvTest)
-	for _, q := range []string{"limit=0", "limit=101", "limit=x", "cursor=***", "cursor=bm90LWpzb24", "cursor=" + strings.Repeat("A", 600)} {
+	for _, q := range []string{"max_results=0", "max_results=101", "max_results=x", "page_token=***", "page_token=bm90LWpzb24", "page_token=" + strings.Repeat("A", 600)} {
 		lister := &fakeAccountLister{}
 		rec := doAuthed(accountsRouter(t, key, lister, nil), http.MethodGet, "/v1/accounts?"+q, key)
 		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_query") {
@@ -136,7 +136,7 @@ func TestListAccountsInvalidQuery(t *testing.T) {
 	}
 	// A well-formed cursor whose id is not a uuid: the store says not found.
 	cursor := encodeAccountsCursor(cursorJSON{CreatedAt: time.Now(), ID: "nope"})
-	rec := doAuthed(accountsRouter(t, key, &fakeAccountLister{err: store.ErrNotFound}, nil), http.MethodGet, "/v1/accounts?cursor="+cursor, key)
+	rec := doAuthed(accountsRouter(t, key, &fakeAccountLister{err: store.ErrNotFound}, nil), http.MethodGet, "/v1/accounts?page_token="+cursor, key)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}

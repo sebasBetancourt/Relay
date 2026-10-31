@@ -40,7 +40,7 @@ func handleListEvents(log *slog.Logger, cal CalendarReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		t, ok := middleware.TenantFromContext(r.Context())
 		if !ok {
-			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 			return
 		}
 		accountID := r.PathValue("id")
@@ -148,6 +148,6 @@ func mapCalendarError(err error) (status int, code string, retryAfter time.Durat
 	case errors.Is(err, calendar.ErrProviderBadResponse):
 		return http.StatusBadGateway, "provider_error", 0
 	default:
-		return http.StatusInternalServerError, "internal error", 0
+		return http.StatusInternalServerError, "internal_error", 0
 	}
 }

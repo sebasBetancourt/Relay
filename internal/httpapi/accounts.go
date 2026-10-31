@@ -39,10 +39,10 @@ type accountJSON struct {
 
 type accountsResponse struct {
 	Accounts   []accountJSON `json:"accounts"`
-	NextCursor string        `json:"next_cursor,omitempty"`
+	NextCursor string        `json:"next_page_token,omitempty"`
 }
 
-// cursorJSON is the opaque `cursor` of GET /v1/accounts.
+// cursorJSON is the opaque `page_token` of GET /v1/accounts.
 type cursorJSON struct {
 	CreatedAt time.Time `json:"c"`
 	ID        string    `json:"i"`
@@ -52,7 +52,7 @@ func handleListAccounts(log *slog.Logger, accounts AccountLister) http.HandlerFu
 	return func(w http.ResponseWriter, r *http.Request) {
 		t, ok := middleware.TenantFromContext(r.Context())
 		if !ok {
-			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 			return
 		}
 		limit, after, detail := parseAccountsQuery(r)
@@ -64,12 +64,12 @@ func handleListAccounts(log *slog.Logger, accounts AccountLister) http.HandlerFu
 		// One extra row tells whether another page exists.
 		rows, err := accounts.ListForTenant(r.Context(), t.ID, limit+1, after)
 		if errors.Is(err, store.ErrNotFound) {
-			writeJSON(w, http.StatusBadRequest, queryErrorBody{Error: "invalid_query", Detail: "cursor is invalid"})
+			writeJSON(w, http.StatusBadRequest, queryErrorBody{Error: "invalid_query", Detail: "page_token is invalid"})
 			return
 		}
 		if err != nil {
 			log.Error("list accounts failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
-			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 			return
 		}
 
@@ -93,7 +93,7 @@ func handleDisconnectAccount(log *slog.Logger, d Disconnector) http.HandlerFunc 
 	return func(w http.ResponseWriter, r *http.Request) {
 		t, ok := middleware.TenantFromContext(r.Context())
 		if !ok {
-			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 			return
 		}
 		accountID := r.PathValue("id")
@@ -111,7 +111,7 @@ func handleDisconnectAccount(log *slog.Logger, d Disconnector) http.HandlerFunc 
 				"account_id", accountID,
 				"request_id", middleware.RequestIDFromContext(r.Context()),
 			)
-			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 		}
 	}
 }
@@ -119,17 +119,17 @@ func handleDisconnectAccount(log *slog.Logger, d Disconnector) http.HandlerFunc 
 func parseAccountsQuery(r *http.Request) (limit int, after *store.AccountCursor, detail string) {
 	qs := r.URL.Query()
 	limit = defaultAccountsLimit
-	if raw := qs.Get("limit"); raw != "" {
+	if raw := qs.Get("max_results"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 || n > maxAccountsLimit {
-			return 0, nil, "limit must be an integer between 1 and 100"
+			return 0, nil, "max_results must be an integer between 1 and 100"
 		}
 		limit = n
 	}
-	if raw := qs.Get("cursor"); raw != "" {
+	if raw := qs.Get("page_token"); raw != "" {
 		c, ok := decodeAccountsCursor(raw)
 		if !ok {
-			return 0, nil, "cursor is invalid"
+			return 0, nil, "page_token is invalid"
 		}
 		after = &store.AccountCursor{CreatedAt: c.CreatedAt, ID: c.ID}
 	}

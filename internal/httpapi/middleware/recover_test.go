@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -20,5 +21,11 @@ func TestRecoverCatchesPanic(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q: a panic must answer like any other error", got)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"internal_error"}` {
+		t.Fatalf("body = %s", got)
 	}
 }

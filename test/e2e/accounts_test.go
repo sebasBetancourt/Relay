@@ -16,7 +16,7 @@ type accountsList struct {
 		Email    string `json:"email"`
 		Status   string `json:"status"`
 	} `json:"accounts"`
-	NextCursor string `json:"next_cursor"`
+	NextCursor string `json:"next_page_token"`
 }
 
 func (f *flow) listAccounts() accountsList {

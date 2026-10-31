@@ -97,7 +97,7 @@ func handleWrite(log *slog.Logger, keys IdempotencyStore, fn func(*http.Request,
 	return func(w http.ResponseWriter, r *http.Request) {
 		t, ok := middleware.TenantFromContext(r.Context())
 		if !ok {
-			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEventBody))
@@ -128,7 +128,7 @@ func handleWrite(log *slog.Logger, keys IdempotencyStore, fn func(*http.Request,
 			return
 		case err != nil:
 			log.Error("idempotency begin failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
-			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal_error"})
 			return
 		case stored != nil:
 			w.Header().Set("Idempotent-Replayed", "true")

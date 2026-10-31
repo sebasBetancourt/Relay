@@ -73,7 +73,7 @@ func TestCallbackStatusTable(t *testing.T) {
 		{"bad id token", "state=s&code=c", oauth.ErrInvalidIDToken, 502, "provider_error"},
 		{"google down", "state=s&code=c", oauth.ErrProviderUnavailable, 502, "provider_unavailable"},
 		{"account taken", "state=s&code=c", store.ErrAccountTaken, 409, "account_already_connected"},
-		{"internal", "state=s&code=c", errors.New("db boom"), 500, "internal error"},
+		{"internal", "state=s&code=c", errors.New("db boom"), 500, "internal_error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

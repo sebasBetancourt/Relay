@@ -130,12 +130,12 @@ func TestViolationsAreCaught(t *testing.T) {
 			want: "not in the spec",
 		},
 		{
-			name: "undocumented query parameter", method: http.MethodGet, target: "/v1/accounts?limit=5&sort=name",
+			name: "undocumented query parameter", method: http.MethodGet, target: "/v1/accounts?max_results=5&sort=name",
 			res:  response{status: 200, contentType: "application/json", body: `{"accounts":[]}`},
 			want: "undocumented query parameter sort",
 		},
 		{
-			name: "accepted request outside the spec", method: http.MethodGet, target: "/v1/accounts?limit=abc",
+			name: "accepted request outside the spec", method: http.MethodGet, target: "/v1/accounts?max_results=abc",
 			res:  response{status: 200, contentType: "application/json", body: `{"accounts":[]}`},
 			want: "request",
 		},
@@ -160,8 +160,8 @@ func TestViolationsAreCaught(t *testing.T) {
 
 // A request the server refused may be wrong on purpose: tests send bad input.
 func TestRefusedRequestsAreNotJudged(t *testing.T) {
-	got := exercise(t, http.MethodGet, "/v1/accounts?limit=abc", "",
-		response{status: 400, contentType: "application/json", body: `{"error":"invalid_query","detail":"limit"}`})
+	got := exercise(t, http.MethodGet, "/v1/accounts?max_results=abc", "",
+		response{status: 400, contentType: "application/json", body: `{"error":"invalid_query","detail":"max_results"}`})
 	if len(got) != 0 {
 		t.Fatalf("problems: %v", got)
 	}
