@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,9 @@ type Config struct {
 	ValidateAuthURL func(t *testing.T, q url.Values)
 	// TokenExtras adds provider fields (scope, id_token) to token responses.
 	TokenExtras func(accessExpiry time.Time) map[string]any
+	// GrantedScope renders the consented scopes for the token response. Nil
+	// leaves whatever TokenExtras returned.
+	GrantedScope func(consented string) string
 }
 
 // RequestRecord is the last observed request (for asserts).
@@ -81,16 +85,19 @@ type Core struct {
 type authCode struct {
 	challenge   string
 	redirectURI string
+	scope       string
 	used        bool
 }
 
 type refreshTok struct {
 	revoked bool
+	scope   string
 }
 
 type accessTok struct {
 	expiry  time.Time
 	revoked bool
+	scope   string
 }
 
 // New builds the core. Defaults: AccessTTL 1h.
@@ -269,7 +276,7 @@ func (c *Core) Consent(authURL string) string {
 
 	code := RandomToken("code")
 	c.mu.Lock()
-	c.codes[code] = &authCode{challenge: challenge, redirectURI: q.Get("redirect_uri")}
+	c.codes[code] = &authCode{challenge: challenge, redirectURI: q.Get("redirect_uri"), scope: q.Get("scope")}
 	c.mu.Unlock()
 	return c.redirect(url.Values{"code": {code}, "state": {state}})
 }
@@ -317,6 +324,15 @@ func (c *Core) AccessOK(r *http.Request) bool {
 	defer c.mu.Unlock()
 	a, ok := c.access[token]
 	return ok && !a.revoked && time.Now().Before(a.expiry)
+}
+
+// HasScope reports whether r's access token was consented with scope.
+func (c *Core) HasScope(r *http.Request, scope string) bool {
+	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	a, ok := c.access[token]
+	return ok && slices.Contains(strings.Fields(a.scope), scope)
 }
 
 // HandleToken is the token endpoint: authorization_code (with PKCE) and
@@ -373,12 +389,12 @@ func (c *Core) exchangeCode(w http.ResponseWriter, form url.Values) {
 	}
 	ac.used = true
 	refresh := RandomToken("rt")
-	c.refresh[refresh] = &refreshTok{}
-	access, exp := c.issueAccessLocked()
+	c.refresh[refresh] = &refreshTok{scope: ac.scope}
+	access, exp := c.issueAccessLocked(ac.scope)
 	c.mu.Unlock()
 
 	c.exchangeN.Add(1)
-	c.writeTokens(w, access, refresh, exp)
+	c.writeTokens(w, access, refresh, exp, ac.scope)
 }
 
 func (c *Core) refreshGrant(w http.ResponseWriter, form url.Values) {
@@ -406,23 +422,23 @@ func (c *Core) refreshGrant(w http.ResponseWriter, form url.Values) {
 	if c.cfg.RotateRefresh {
 		rec.revoked = true // the token just used is dead from now on
 		newRefresh = RandomToken("rt")
-		c.refresh[newRefresh] = &refreshTok{}
+		c.refresh[newRefresh] = &refreshTok{scope: rec.scope}
 	}
-	access, exp := c.issueAccessLocked()
+	access, exp := c.issueAccessLocked(rec.scope)
 	c.mu.Unlock()
 
 	c.refreshN.Add(1)
-	c.writeTokens(w, access, newRefresh, exp)
+	c.writeTokens(w, access, newRefresh, exp, rec.scope)
 }
 
-func (c *Core) issueAccessLocked() (string, time.Time) {
+func (c *Core) issueAccessLocked(scope string) (string, time.Time) {
 	access := RandomToken("at")
 	exp := time.Now().Add(c.cfg.AccessTTL)
-	c.access[access] = &accessTok{expiry: exp}
+	c.access[access] = &accessTok{expiry: exp, scope: scope}
 	return access, exp
 }
 
-func (c *Core) writeTokens(w http.ResponseWriter, access, refresh string, exp time.Time) {
+func (c *Core) writeTokens(w http.ResponseWriter, access, refresh string, exp time.Time, scope string) {
 	body := map[string]any{
 		"access_token": access,
 		"token_type":   "Bearer",
@@ -435,6 +451,9 @@ func (c *Core) writeTokens(w http.ResponseWriter, access, refresh string, exp ti
 		for k, v := range c.cfg.TokenExtras(exp) {
 			body[k] = v
 		}
+	}
+	if c.cfg.GrantedScope != nil && scope != "" {
+		body["scope"] = c.cfg.GrantedScope(scope)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)

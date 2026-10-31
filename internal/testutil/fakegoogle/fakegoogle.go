@@ -27,6 +27,7 @@ const (
 	ScopeOpenID           = "openid"
 	ScopeEmail            = "email"
 	ScopeCalendarReadonly = "https://www.googleapis.com/auth/calendar.readonly"
+	ScopeCalendarEvents   = "https://www.googleapis.com/auth/calendar.events"
 )
 
 // Options configures the fake Google.
@@ -52,6 +53,9 @@ type Event struct {
 	OrganizerName  string
 	ETag           string
 	Status         string // "cancelled" keeps the event in a sync snapshot as a delete
+	Recurrence     []string
+	// RecurringEventID makes this an occurrence of that series.
+	RecurringEventID string
 }
 
 // RequestRecord is the last observed token/calendar request (for asserts).
@@ -76,6 +80,8 @@ type Server struct {
 	syncToken string
 	syncGone  bool
 	lastSync  string
+	writes    []Write
+	writeSeq  int
 }
 
 // New starts the fake server. Closed via t.Cleanup.
@@ -115,6 +121,7 @@ func New(t *testing.T, opts Options) *Server {
 				"id_token": g.idToken(exp),
 			}
 		},
+		GrantedScope: func(consented string) string { return consented },
 	})
 
 	mux := http.NewServeMux()
@@ -125,6 +132,10 @@ func New(t *testing.T, opts Options) *Server {
 	mux.HandleFunc("/revoke", g.handleRevoke)
 	mux.HandleFunc("/calendars/primary/events", g.handleEvents)
 	mux.HandleFunc("POST /calendars/primary/events/watch", g.handleWatch)
+	mux.HandleFunc("POST /calendars/primary/events", g.handleInsert)
+	mux.HandleFunc("GET /calendars/primary/events/{id}", g.handleGet)
+	mux.HandleFunc("PATCH /calendars/primary/events/{id}", g.handlePatch)
+	mux.HandleFunc("DELETE /calendars/primary/events/{id}", g.handleDelete)
 	mux.HandleFunc("POST /channels/stop", g.handleStop)
 	g.srv = httptest.NewServer(mux)
 	t.Cleanup(g.srv.Close)
@@ -213,7 +224,7 @@ func (g *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		if !eventInWindow(e, timeMin, timeMax) {
 			continue
 		}
-		item := map[string]any{"id": e.ID, "summary": e.Summary}
+		item := map[string]any{"id": e.ID, "etag": eventETag(e), "summary": e.Summary}
 		if e.Location != "" {
 			item["location"] = e.Location
 		}

@@ -55,6 +55,8 @@ type Event struct {
 	Location       string
 	OrganizerEmail string
 	OrganizerName  string
+	// Type is Graph's event type; empty means singleInstance.
+	Type string
 }
 
 // Calls counts token, /me and calendarView traffic.
@@ -78,6 +80,8 @@ type Server struct {
 	deltaTok  string
 	deltaGone bool
 	lastDelta string
+	writes    []Write
+	writeSeq  int
 }
 
 // New starts the fake server. Closed via t.Cleanup.
@@ -124,6 +128,7 @@ func New(t *testing.T, opts Options) *Server {
 				"scope": "https://graph.microsoft.com/Calendars.Read https://graph.microsoft.com/User.Read openid email offline_access",
 			}
 		},
+		GrantedScope: graphGrantedScope,
 	})
 
 	mux := http.NewServeMux()
@@ -135,6 +140,10 @@ func New(t *testing.T, opts Options) *Server {
 	mux.HandleFunc("GET /v1.0/me", m.handleMe)
 	mux.HandleFunc("GET /v1.0/me/calendarView", m.handleCalendarView)
 	mux.HandleFunc("GET /v1.0/me/calendarView/delta", m.handleDelta)
+	mux.HandleFunc("POST /v1.0/me/events", m.handleCreate)
+	mux.HandleFunc("GET /v1.0/me/events/{id}", m.handleGet)
+	mux.HandleFunc("PATCH /v1.0/me/events/{id}", m.handlePatch)
+	mux.HandleFunc("DELETE /v1.0/me/events/{id}", m.handleDelete)
 	mux.HandleFunc("POST /v1.0/subscriptions", m.handleCreateSub)
 	mux.HandleFunc("PATCH /v1.0/subscriptions/{id}", m.handlePatchSub)
 	mux.HandleFunc("DELETE /v1.0/subscriptions/{id}", m.handleDeleteSub)

@@ -157,10 +157,11 @@ func (f *flow) buildRouter(pool *pgxpool.Pool) http.Handler {
 			Endpoint: oauth2.Endpoint{AuthURL: f.google.AuthURL(), TokenURL: f.google.TokenURL()},
 			Scopes:   gBase.OAuth.Scopes,
 		},
-		AuthOptions:   gBase.AuthOptions,
-		RequiredScope: gBase.RequiredScope,
-		Identify:      gBase.Identify,
-		Revoke:        oauth.GoogleRevoke(f.google.RevokeURL()), // never the real Google
+		AuthOptions:        gBase.AuthOptions,
+		IncrementalOptions: gBase.IncrementalOptions,
+		RequiredScope:      gBase.RequiredScope,
+		Identify:           gBase.Identify,
+		Revoke:             oauth.GoogleRevoke(f.google.RevokeURL()), // never the real Google
 	}
 	msSpec := oauth.MicrosoftSpec("flow-ms-client", "flow-ms-secret", microsoftRedirect, "common", f.ms.GraphBaseURL())
 	msSpec.OAuth.Endpoint.AuthURL = f.ms.AuthURL()
@@ -212,6 +213,7 @@ func (f *flow) buildRouter(pool *pgxpool.Pool) http.Handler {
 	return httpapi.NewRouter(httpapi.Deps{
 		Log: discardLogger(), DB: pool, Tenants: store.NewTenants(pool), Env: apikey.EnvTest,
 		Connect: oauthSvc, Callback: oauthSvc, Calendar: calSvc,
+		CalendarWrite: calSvc, Idempotency: store.NewIdempotency(pool),
 		Accounts: accounts, Disconnect: oauthSvc, Webhooks: hooks, RateLimit: f.rateLimit,
 	})
 }
