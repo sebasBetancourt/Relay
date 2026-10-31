@@ -32,6 +32,9 @@ type Deps struct {
 	// Webhooks receives provider push notifications. Nil leaves push off;
 	// those paths then fall through to API-key auth like any other /v1 route.
 	Webhooks Webhooks
+	// ClientIPHeader names the header a trusted proxy puts the client address
+	// in. Empty uses the socket address.
+	ClientIPHeader string
 	// RateLimit budgets requests per tenant and per IP. Nil limits nothing.
 	RateLimit *middleware.RateLimiter
 }
@@ -125,5 +128,6 @@ func newRouter(d Deps) (http.Handler, []string) {
 	mux.ServeMux.Handle("/v1/", middleware.RequireAPIKey(log, d.Tenants, d.Env, rl)(rl.PerTenant(v1)))
 
 	// Outer runs first. middleware.RequestID must wrap Recover/middleware.Logger so they see the id in context.
-	return middleware.RequestID(middleware.Recover(log)(middleware.Logger(log)(mux))), patterns
+	h := middleware.RequestID(middleware.Recover(log)(middleware.Logger(log)(mux)))
+	return middleware.ClientIPFrom(d.ClientIPHeader)(h), patterns
 }

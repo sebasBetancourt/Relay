@@ -71,6 +71,10 @@ type Config struct {
 	// WebhookBaseURL is set. Empty leaves delta sync off.
 	NATSURL string
 
+	// ClientIPHeader names the header a trusted proxy writes the client
+	// address in (CLIENT_IP_HEADER). Empty uses the socket address.
+	ClientIPHeader string
+
 	// RedisURL shares the rate limit across replicas. Empty keeps the limit
 	// local to each replica. Never log it: it may hold a password.
 	RedisURL string
@@ -148,6 +152,7 @@ func load(now time.Time) (Config, error) {
 		errs = append(errs, errors.New("NATS_URL is required when WEBHOOK_BASE_URL is set"))
 	}
 
+	cfg.ClientIPHeader = strings.TrimSpace(os.Getenv("CLIENT_IP_HEADER"))
 	cfg.RedisURL = strings.TrimSpace(os.Getenv("REDIS_URL"))
 	if err := validateRedisURL(cfg.RedisURL); err != nil {
 		errs = append(errs, fmt.Errorf("REDIS_URL: %w", err))
