@@ -159,16 +159,22 @@ Set through environment variables (see [`.env.example`](.env.example)). The API 
 | `MICROSOFT_EXPIRATION_DATE` | no | Client secret expiry (`YYYY-MM-DD`): warns 30 days before, refuses to start after |
 | `PORT`, `LOG_LEVEL` | no | `8080`, `info` |
 | `WEBHOOK_BASE_URL` | no | Public `https` origin for calendar push. Empty keeps polling |
+| `CLIENT_IP_HEADER` | no | Header a trusted proxy puts the client address in, such as `Fly-Client-IP`. Empty uses the socket address |
 | `REDIS_URL` | no | Shares rate limit budgets across replicas. Empty keeps one budget per replica. If Redis fails, the API keeps serving with a local limit |
 | `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_BURST` | no | Per tenant: `600`, `100` |
 | `RATE_LIMIT_IP_PER_MINUTE`, `RATE_LIMIT_IP_BURST` | no | Per IP, on the OAuth callback and requests without a valid key: `1200`, `200` |
 | `NATS_URL` | no | JetStream. Required when `WEBHOOK_BASE_URL` is set. When set, delta sync consumes `relay.sync.account`. Empty leaves async work off, and startup says so. Failed jobs land in `RELAY_DLQ`; `relayctl dlq list` and `relayctl dlq replay <seq>` inspect and requeue them |
+
+## Deploy
+
+[`docs/deploy.md`](docs/deploy.md) runs your own instance on Fly.io: HTTPS handled for you, private Postgres and NATS, and daily encrypted backups, for about $8 per month.
 
 ## Documentation
 
 - [API guide](docs/api.md), [API reference](https://sebasbetancourt.github.io/Relay/) and [OpenAPI spec](api/openapi.yaml)
 - Provider setup: [Google](docs/google-cloud-setup.md), [Microsoft Entra ID](docs/microsoft-setup.md)
 - [Design](docs/design.md) and [architecture decisions](docs/adr/)
+- [Deploy](docs/deploy.md): your own instance on Fly.io
 - [Development](docs/development.md): build, tests and project layout
 - [Secret scanning](docs/secret-scanning.md): how leaked API keys are detected
 

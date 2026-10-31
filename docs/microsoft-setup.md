@@ -92,6 +92,8 @@ MICROSOFT_EXPIRATION_DATE=<YYYY-MM-DD>
 
 ## Production
 
+To run your own public instance, follow [Deploy](deploy.md), which also lists the callback to register here.
+
 | Development | Production | Why |
 | --- | --- | --- |
 | One `relay-dev` registration | One registration per environment (`relay-dev`, `relay-staging`, `relay-prod`), managed as code (Terraform `azuread` provider) | Breaking dev never touches prod; the config is reviewable |

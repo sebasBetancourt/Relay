@@ -8,6 +8,9 @@ All notable changes to Relay are documented here. The format follows
 
 ### Added
 
+- Deployment on Fly.io: `fly.toml` for the API, private Postgres and NATS, `docs/deploy.md`, and a daily encrypted backup workflow ([ADR 0012](docs/adr/0012-deploy-on-fly.md)).
+- `relay migrate` applies the embedded migrations, so an image with no shell can migrate its database.
+- `CLIENT_IP_HEADER` names the header a trusted proxy puts the client address in, so rate limits by IP work behind a proxy.
 - Contract tests: every response in the handler and end-to-end suites is validated against `api/openapi.yaml`, undocumented fields included, and a test compares the router's routes with the spec ([ADR 0011](docs/adr/0011-contract-tests.md)).
 - The API reference is published to GitHub Pages from the spec.
 - Write events: `POST /v1/calendars/{id}/events`, plus `PATCH` and `DELETE` on `/{event_id}`, with one body for both providers. Recurrences become `RRULE` or `patternedRecurrence`, and IANA zones become Windows names from CLDR. What the providers cannot store identically is refused with `400`. `Idempotency-Key` makes retries safe, and `If-Match` with the new `version` field refuses stale edits ([ADR 0010](docs/adr/0010-event-writes.md)).

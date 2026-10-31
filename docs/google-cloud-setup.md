@@ -54,6 +54,8 @@ GOOGLE_REDIRECT_URL=http://localhost:8080/v1/oauth/google/callback
 
 ## Production
 
+To run your own public instance, follow [Deploy](deploy.md), which also lists the callback to register here.
+
 What changes beyond local development:
 
 | Development | Production | Why |

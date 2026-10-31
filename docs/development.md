@@ -98,7 +98,8 @@ internal/
   buildinfo/                version stamped at build time
   testutil/                 fake providers (fakeoauth, fakegoogle, fakemicrosoft) and the API contract checker (contract)
 test/e2e/                   end-to-end flow suite
-migrations/                 SQL migrations (golang-migrate)
+migrations/                 SQL migrations (golang-migrate), embedded for `relay migrate`
+deploy/                     Fly.io config for the private Postgres and NATS apps
 api/openapi.yaml            OpenAPI 3.1 contract
 docs/                       design, ADRs, provider setup guides, API guide
 bin/                        build output (gitignored)
