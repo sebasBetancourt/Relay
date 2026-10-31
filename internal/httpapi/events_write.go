@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -219,14 +220,71 @@ func requestHash(r *http.Request, body []byte) string {
 }
 
 // decodeStrict refuses unknown fields: a typo like "atendees" must not create
-// an event without its guests.
+// an event without its guests. Errors are rewritten to friendlier public
+// messages that do not expose Go's decoder wording.
 func decodeStrict(body []byte, dst any) error {
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		return errors.New("body must be a JSON event: " + err.Error())
+		return errors.New(friendlyJSONError(err))
 	}
 	return nil
+}
+
+// friendlyJSONError turns common encoding/json errors into clear API messages.
+// Unknown cases fall back to a generic message.
+func friendlyJSONError(err error) string {
+	msg := err.Error()
+	// unknown field "foo"
+	if idx := strings.Index(msg, "unknown field "); idx >= 0 {
+		rest := msg[idx+len("unknown field "):]
+		if strings.HasPrefix(rest, """) {
+			end := strings.Index(rest[1:], """)
+			if end >= 0 {
+				field := rest[1 : 1+end]
+				return fmt.Sprintf("unknown field %q", field)
+			}
+		}
+		return "unknown field"
+	}
+	// cannot unmarshal X into Go value of type Y
+	// or cannot unmarshal X into Go struct field ...
+	if strings.Contains(msg, "cannot unmarshal") {
+		// extract field if present
+		if idx := strings.Index(msg, " into Go struct field "); idx >= 0 {
+			fieldPart := msg[idx+len(" into Go struct field "):]
+			// typically "package.Type.fieldName of type ..."
+			if dot := strings.LastIndex(fieldPart, "."); dot >= 0 {
+				field := fieldPart[dot+1:]
+				// trim until space or end
+				for i, c := range field {
+					if c == ' ' || c == '	' || c == ':' {
+						field = field[:i]
+						break
+					}
+				}
+				// determine expected type from context if possible, else generic
+				if strings.Contains(msg, "into Go value of type string") || strings.Contains(msg, " of type string") {
+					return fmt.Sprintf("%s must be a string", field)
+				}
+				if strings.Contains(msg, "of type bool") {
+					return fmt.Sprintf("%s must be a boolean", field)
+				}
+				return fmt.Sprintf("%s has an invalid type", field)
+			}
+		}
+		// top-level type error
+		if strings.Contains(msg, "into Go value of type") {
+			return "body has an invalid type"
+		}
+		return "invalid type for a field"
+	}
+	// syntax / structural errors
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "invalid character") || strings.Contains(lower, "unexpected end of json") || strings.Contains(lower, "eof") || strings.Contains(lower, "syntax error") {
+		return "body must be valid JSON"
+	}
+	return "body must be a JSON event"
 }
 
 // parseIfMatch accepts the version as returned, or the quoted and weak forms an
