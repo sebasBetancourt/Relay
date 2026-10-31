@@ -3,11 +3,34 @@ package ratelimit
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/go-redis/redis_rate/v10"
 	"github.com/redis/go-redis/v9"
 )
+
+// redisLog sends go-redis's own log lines through slog. Its default logger
+// writes plain text to stderr, which a JSON log pipeline cannot parse.
+type redisLog struct{ log *slog.Logger }
+
+func (l redisLog) Printf(ctx context.Context, format string, v ...interface{}) {
+	l.log.WarnContext(ctx, "redis: "+redactRedisURL(fmt.Sprintf(format, v...)))
+}
+
+var redisURLPassword = regexp.MustCompile(`(redis(?:s)?://[^:/@\s]+:)[^@\s]+@`)
+
+func redactRedisURL(msg string) string {
+	return redisURLPassword.ReplaceAllString(msg, "${1}***@")
+}
+
+// SetRedisLogger installs the adapter for every go-redis client in the
+// process. A dial failure then reaches the API's JSON log like any other
+// warning, and a URL quoted in a message cannot leak its password.
+func SetRedisLogger(log *slog.Logger) {
+	redis.SetLogger(redisLog{log: log})
+}
 
 // redisTimeout bounds every Redis step. The limiter sits on the hot path of
 // every request: a slow Redis must cost milliseconds, not the client's timeout.

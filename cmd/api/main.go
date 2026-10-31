@@ -157,6 +157,7 @@ func main() {
 	if cfg.RedisURL == "" {
 		log.Warn("rate limit is per replica", "reason", "REDIS_URL is unset; with N replicas the limit is N times higher")
 	} else {
+		ratelimit.SetRedisLogger(log)
 		redis, err = ratelimit.OpenRedis(cfg.RedisURL)
 		if err != nil {
 			log.Error("redis config failed", "err", err)
