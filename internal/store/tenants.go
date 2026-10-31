@@ -36,11 +36,14 @@ const (
 // Tenant is a Relay customer. It never carries the API key or its hash.
 // KeyPrefix is the display prefix of the key used for the lookup (or the
 // first key, on Create).
+//
+// RateLimitPerMinute overrides the global limit; nil means use the global one.
 type Tenant struct {
-	ID        string
-	Name      string
-	KeyPrefix string
-	CreatedAt time.Time
+	ID                 string
+	Name               string
+	KeyPrefix          string
+	CreatedAt          time.Time
+	RateLimitPerMinute *int
 }
 
 type cacheEntry struct {
@@ -154,12 +157,12 @@ func (s *Tenants) ByAPIKeyHash(ctx context.Context, apiKeyHash string) (Tenant, 
 		revokedAt *time.Time
 	)
 	err := s.db.QueryRow(ctx, `
-		SELECT t.id::text, t.name, k.key_prefix, t.created_at, k.revoked_at
+		SELECT t.id::text, t.name, k.key_prefix, t.created_at, t.rate_limit_per_minute, k.revoked_at
 		FROM api_keys k
 		JOIN tenants t ON t.id = k.tenant_id
 		WHERE k.key_hash = $1`,
 		apiKeyHash,
-	).Scan(&t.ID, &t.Name, &t.KeyPrefix, &t.CreatedAt, &revokedAt)
+	).Scan(&t.ID, &t.Name, &t.KeyPrefix, &t.CreatedAt, &t.RateLimitPerMinute, &revokedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Tenant{}, ErrNotFound
 	}

@@ -76,6 +76,38 @@ func TestTenantsLookupUsesCache(t *testing.T) {
 	}
 }
 
+func TestTenantsLookupCarriesRateLimitOverride(t *testing.T) {
+	s := newTestTenants(t)
+	ctx := context.Background()
+
+	plain := apikey.Generate(apikey.EnvTest)
+	createTenant(t, s, "No override", plain)
+	got, err := s.ByAPIKeyHash(ctx, plain.Hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RateLimitPerMinute != nil {
+		t.Fatalf("override = %d, want nil", *got.RateLimitPerMinute)
+	}
+
+	limited := apikey.Generate(apikey.EnvTest)
+	tenant := createTenant(t, s, "Override", limited)
+	if _, err := s.db.Exec(ctx, `UPDATE tenants SET rate_limit_per_minute = 50 WHERE id = $1`, tenant.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.ByAPIKeyHash(ctx, limited.Hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RateLimitPerMinute == nil || *got.RateLimitPerMinute != 50 {
+		t.Fatalf("override = %v, want 50", got.RateLimitPerMinute)
+	}
+
+	if _, err := s.db.Exec(ctx, `UPDATE tenants SET rate_limit_per_minute = 0 WHERE id = $1`, tenant.ID); err == nil {
+		t.Fatal("the CHECK must refuse a limit of 0")
+	}
+}
+
 func TestTenantsLookupUnknownHash(t *testing.T) {
 	s := newTestTenants(t)
 
