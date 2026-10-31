@@ -2,11 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -125,23 +125,37 @@ func handleWrite(log *slog.Logger, keys IdempotencyStore, fn func(*http.Request,
 			return
 		case errors.Is(err, store.ErrIdempotencyInProgress):
 			w.Header().Set("Retry-After", "1")
-			writeJSON(w, http.StatusConflict, errorBody{Error: "idempotency_key_in_progress"})
+			writeJSON(w, http.StatusConflict, errorBody{Error: "idempotency_in_progress"})
 			return
 		case err != nil:
+			log.Error("idempotency begin failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
 			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
 			return
-		}
-		if stored != nil {
+		case stored != nil:
 			w.Header().Set("Idempotent-Replayed", "true")
 			writeStored(w, *stored)
 			return
 		}
 
 		out := fn(r, t.ID, body)
-		if out.status < 500 {
-			_ = keys.Complete(r.Context(), t.ID, key, store.StoredResponse{Status: out.status, Body: mustJSON(out.body)})
-		} else {
-			_ = keys.Release(r.Context(), t.ID, key)
+		// The client may have gone; the record must still be written.
+		ctx := context.WithoutCancel(r.Context())
+		if out.status >= 300 {
+			if err := keys.Release(ctx, t.ID, key); err != nil {
+				log.Error("idempotency release failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
+			}
+			writeOutcomeResponse(w, out)
+			return
+		}
+		res := store.StoredResponse{Status: out.status}
+		if out.body != nil {
+			if res.Body, err = json.Marshal(out.body); err != nil {
+				log.Error("idempotency encode failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
+			}
+		}
+		if err := keys.Complete(ctx, t.ID, key, res); err != nil {
+			// The write happened: answer it. A retry after a minute may repeat it.
+			log.Error("idempotency complete failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
 		}
 		writeOutcomeResponse(w, out)
 	}
@@ -158,19 +172,33 @@ func writeOutcomeResponse(w http.ResponseWriter, out writeOutcome) {
 	writeJSON(w, out.status, out.body)
 }
 
-func writeStored(w http.ResponseWriter, stored store.StoredResponse) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(stored.Status)
-	_, _ = w.Write(stored.Body)
+func writeStored(w http.ResponseWriter, res store.StoredResponse) {
+	if res.Body == nil {
+		w.WriteHeader(res.Status)
+		return
+	}
+	writeJSON(w, res.Status, json.RawMessage(res.Body))
 }
 
-func mustJSON(v any) []byte {
-	b, _ := json.Marshal(v)
-	return b
-}
-
-// writeFailure maps a calendar error to a status and code.
+// writeFailure maps an error from the calendar service.
 func writeFailure(log *slog.Logger, r *http.Request, err error) writeOutcome {
+	var (
+		invalid *calendar.ValidationError
+		scope   *calendar.InsufficientScopeError
+	)
+	switch {
+	case errors.As(err, &invalid):
+		return writeOutcome{status: http.StatusBadRequest, body: queryErrorBody{Error: invalid.Code, Detail: invalid.Detail}}
+	case errors.As(err, &scope):
+		return writeOutcome{status: http.StatusForbidden, body: insufficientScopeBody{
+			Error:          "insufficient_scope",
+			RequiredScopes: scope.Required,
+			ReconnectURL:   "/v1/connect/" + scope.Provider + "?features=" + string(oauth.FeatureCalendarWrite),
+		}}
+	case errors.Is(err, calendar.ErrVersionConflict):
+		return writeOutcome{status: http.StatusPreconditionFailed, body: errorBody{Error: "version_conflict"}}
+	}
+
 	status, code, retryAfter := mapCalendarError(err)
 	if status >= 500 {
 		log.Error("write event failed",
@@ -186,8 +214,7 @@ func writeFailure(log *slog.Logger, r *http.Request, err error) writeOutcome {
 // event must not replay on a delete.
 func requestHash(r *http.Request, body []byte) string {
 	h := sha256.New()
-	h.Write([]byte(r.Method + " " + r.URL.Path + "
-"))
+	h.Write([]byte(r.Method + " " + r.URL.Path + "\n"))
 	h.Write(body)
 	return hex.EncodeToString(h.Sum(nil))
 }
