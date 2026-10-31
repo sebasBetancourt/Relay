@@ -157,12 +157,17 @@ paths:
             Cache-Control: { $ref: "#/components/headers/NoStore" }
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
         "400":
-          description: Unknown provider, or not configured on this deployment.
+          description: |
+            - `unsupported_provider`: unknown, or not configured on this deployment.
+            - `invalid_query`: an unknown name in `features`.
           headers:
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/QueryError"
               example: { error: unsupported_provider }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -263,10 +268,10 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "413":
           description: The body exceeds 64 KiB.
-        "429":
-          description: Too many requests from this address.
-        "503":
-          description: The job could not be enqueued. The provider should retry.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "429": { $ref: "#/components/responses/WebhookThrottled" }
+        "503": { $ref: "#/components/responses/WebhookQueueDown" }
 
   /v1/webhooks/microsoft:
     post:
@@ -313,6 +318,10 @@ paths:
           description: At least one sync job was enqueued.
           headers:
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "400":
+          description: The body is not JSON. Nothing queued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
         "401":
           description: A `clientState` does not match. Nothing queued.
           headers:
@@ -322,10 +331,10 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "413":
           description: The body exceeds 64 KiB.
-        "429":
-          description: Too many requests from this address.
-        "503":
-          description: The job could not be enqueued. Graph should retry.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "429": { $ref: "#/components/responses/WebhookThrottled" }
+        "503": { $ref: "#/components/responses/WebhookQueueDown" }
 
   /v1/webhooks/microsoft/lifecycle:
     post:
@@ -342,23 +351,33 @@ paths:
         - { name: validationToken, in: query, schema: { type: string } }
       responses:
         "200":
-          description: Handshake, or nothing to enqueue.
+          description: Handshake (the `validationToken`, as on `/v1/webhooks/microsoft`), or nothing to enqueue.
           headers:
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            text/plain:
+              schema: { type: string }
         "202":
           description: A renew, resubscribe or sync job was enqueued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "400":
+          description: The body is not JSON. Nothing queued.
           headers:
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
         "401":
           description: A `clientState` does not match. Nothing queued.
           headers:
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "413":
           description: The body exceeds 64 KiB.
-        "429":
-          description: Too many requests from this address.
-        "503":
-          description: The job could not be enqueued.
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "429": { $ref: "#/components/responses/WebhookThrottled" }
+        "503": { $ref: "#/components/responses/WebhookQueueDown" }
 
   /v1/accounts:
     get:
@@ -638,11 +657,26 @@ components:
       schema: { type: string, const: "private, no-store" }
 
   responses:
+    WebhookThrottled:
+      description: Too many requests from this address.
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        text/plain:
+          schema: { type: string }
+    WebhookQueueDown:
+      description: The job could not be enqueued. The provider should retry.
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        text/plain:
+          schema: { type: string }
     InvalidEvent:
       description: |
         Nothing was sent to the provider.
 
         - `invalid_event` or `invalid_body`: the body is wrong.
+        - `invalid_idempotency_key`: the key is longer than 255 characters.
         - `unsupported_recurrence`: the providers cannot represent it identically, or the event is a single occurrence.
         - `unsupported_timezone`: the IANA zone has no Windows equivalent in CLDR.
       headers:
@@ -768,7 +802,7 @@ components:
       properties:
         error:
           type: string
-          enum: [invalid_body, invalid_event, unsupported_recurrence, unsupported_timezone]
+          enum: [invalid_body, invalid_event, invalid_idempotency_key, unsupported_recurrence, unsupported_timezone]
         detail: { type: string }
 
     Tenant:

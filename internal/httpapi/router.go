@@ -43,12 +43,37 @@ type Webhooks interface {
 	MicrosoftLifecycle(http.ResponseWriter, *http.Request)
 }
 
+// routeTable is a ServeMux that remembers its "METHOD /path" patterns, so a
+// test can compare them with the OpenAPI spec.
+type routeTable struct {
+	*http.ServeMux
+	patterns *[]string
+}
+
+func (t routeTable) Handle(pattern string, h http.Handler) {
+	*t.patterns = append(*t.patterns, pattern)
+	t.ServeMux.Handle(pattern, h)
+}
+
+func (t routeTable) HandleFunc(pattern string, h http.HandlerFunc) {
+	*t.patterns = append(*t.patterns, pattern)
+	t.ServeMux.HandleFunc(pattern, h)
+}
+
+// NewRouter builds the API's handler.
 func NewRouter(d Deps) http.Handler {
+	h, _ := newRouter(d)
+	return h
+}
+
+func newRouter(d Deps) (http.Handler, []string) {
 	log, db, rl := d.Log, d.DB, d.RateLimit
-	mux := http.NewServeMux()
+	var patterns []string
+	mux := routeTable{http.NewServeMux(), &patterns}
 
 	// Public: probes from Docker/Kubernetes carry no API key.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -61,6 +86,7 @@ func NewRouter(d Deps) http.Handler {
 			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
 	})
@@ -84,7 +110,7 @@ func NewRouter(d Deps) http.Handler {
 	// routing, so unknown /v1 paths also answer 401 without a key and do
 	// not reveal which routes exist. The rate limit runs after auth because
 	// it needs the tenant; probes above are never limited.
-	v1 := http.NewServeMux()
+	v1 := routeTable{http.NewServeMux(), &patterns}
 	v1.HandleFunc("GET /v1/me", handleMe)
 	v1.HandleFunc("GET /v1/connect/{provider}", handleConnect(log, d.Connect))
 	v1.HandleFunc("GET /v1/calendars/{id}/events", handleListEvents(log, d.Calendar))
@@ -95,8 +121,9 @@ func NewRouter(d Deps) http.Handler {
 	}
 	v1.HandleFunc("GET /v1/accounts", handleListAccounts(log, d.Accounts))
 	v1.HandleFunc("DELETE /v1/accounts/{id}", handleDisconnectAccount(log, d.Disconnect))
-	mux.Handle("/v1/", middleware.RequireAPIKey(log, d.Tenants, d.Env, rl)(rl.PerTenant(v1)))
+	// Straight to the ServeMux: this catch-all is not a route of its own.
+	mux.ServeMux.Handle("/v1/", middleware.RequireAPIKey(log, d.Tenants, d.Env, rl)(rl.PerTenant(v1)))
 
 	// Outer runs first. middleware.RequestID must wrap Recover/middleware.Logger so they see the id in context.
-	return middleware.RequestID(middleware.Recover(log)(middleware.Logger(log)(mux)))
+	return middleware.RequestID(middleware.Recover(log)(middleware.Logger(log)(mux))), patterns
 }

@@ -113,7 +113,7 @@ func handleWrite(log *slog.Logger, keys IdempotencyStore, fn func(*http.Request,
 			return
 		}
 		if len(key) > maxIdempotencyKey {
-			writeJSON(w, http.StatusBadRequest, queryErrorBody{Error: "invalid_query", Detail: "Idempotency-Key must be at most 255 characters"})
+			writeJSON(w, http.StatusBadRequest, queryErrorBody{Error: "invalid_idempotency_key", Detail: "Idempotency-Key must be at most 255 characters"})
 			return
 		}
 

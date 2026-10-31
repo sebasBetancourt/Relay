@@ -229,6 +229,10 @@ func (s *Service) finish(w http.ResponseWriter, r *http.Request, out outcome) {
 			return
 		}
 	}
+	if out.status == http.StatusOK {
+		// Same type as the handshake, which shares this status on Graph's routes.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	}
 	w.WriteHeader(out.status)
 }
 
