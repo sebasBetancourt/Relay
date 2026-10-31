@@ -1,0 +1,18 @@
+# Private NATS JetStream for Relay. No [http_service], so it has no public address.
+app = "relay-lpfw2a-nats"
+primary_region = "iad"
+
+[build]
+  image = "nats:2.11.17-alpine"
+
+[processes]
+  # Fly's private network is IPv6 only: listen there, and keep jobs on the volume.
+  app = "-js -sd /data -a ::"
+
+[mounts]
+  source = "relay_nats"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

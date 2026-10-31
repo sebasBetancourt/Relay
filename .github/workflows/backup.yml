@@ -1,0 +1,55 @@
+name: Backup
+
+# A daily pg_dump, stored off the platform that hosts the database. It stays
+# off until BACKUP_AGE_RECIPIENT is set. See docs/deploy.md.
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dump:
+    if: vars.BACKUP_AGE_RECIPIENT != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Install age
+        run: sudo apt-get update && sudo apt-get install -y age
+
+      - name: Reach the private database
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          nohup flyctl proxy 15432:5432 --app "${{ vars.BACKUP_DB_APP }}" >proxy.log 2>&1 &
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/15432) 2>/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat proxy.log
+          exit 1
+
+      - name: Dump and encrypt
+        # Artifacts of a public repository are downloadable by anyone signed in
+        # to GitHub, so nothing leaves this step in the clear. An explicit shell
+        # turns on pipefail, so a failed pg_dump fails the job.
+        shell: bash
+        env:
+          PGPASSWORD: ${{ secrets.BACKUP_DB_PASSWORD }}
+        run: |
+          docker run --rm --network host -e PGPASSWORD postgres:16 \
+            pg_dump -h 127.0.0.1 -p 15432 -U relay -d relay -Fc \
+            | age -r "${{ vars.BACKUP_AGE_RECIPIENT }}" -o relay.dump.age
+          test -s relay.dump.age
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-${{ github.run_id }}
+          path: relay.dump.age
+          retention-days: 30
+          if-no-files-found: error

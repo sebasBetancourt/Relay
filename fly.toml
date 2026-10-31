@@ -1,0 +1,36 @@
+# Relay on Fly.io. Step by step in docs/deploy.md. Secrets go through
+# `flyctl secrets set`, never in this file.
+app = "relay-lpfw2a"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  # The image's ENTRYPOINT stays, so this runs `relay migrate`.
+  release_command = "migrate"
+
+[env]
+  RELAY_ENV = "live"
+  LOG_LEVEL = "info"
+  PORT = "8080"
+  CLIENT_IP_HEADER = "Fly-Client-IP"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Relay is never idle: token refresh, subscription renewal and the sync
+  # consumer run inside the API, so a stopped machine would lose them.
+  auto_stop_machines = "off"
+  auto_start_machines = false
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/readyz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -1,0 +1,21 @@
+# Private Postgres for Relay. No [http_service], so it has no public address:
+# only apps in the same Fly organization reach it, over the private network.
+app = "relay-lpfw2a-db"
+primary_region = "iad"
+
+[build]
+  image = "postgres:16"
+
+[env]
+  POSTGRES_USER = "relay"
+  POSTGRES_DB = "relay"
+  # A subdirectory: a new volume's root holds lost+found, which initdb refuses.
+  PGDATA = "/data/pgdata"
+
+[mounts]
+  source = "relay_db"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
