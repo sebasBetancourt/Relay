@@ -18,6 +18,9 @@ import (
 const (
 	MicrosoftCalendarsRead = "Calendars.Read"
 	MicrosoftUserRead      = "User.Read"
+	// MicrosoftCalendarsReadWrite adds event writes, asked for only with
+	// FeatureCalendarWrite.
+	MicrosoftCalendarsReadWrite = "Calendars.ReadWrite"
 	// MicrosoftOfflineAccess makes Entra ID return a refresh token.
 	MicrosoftOfflineAccess = "offline_access"
 

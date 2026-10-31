@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -143,7 +144,8 @@ type Result struct {
 // Start begins a connect for tenantID and returns the consent URL.
 // The state is saved before the URL is built: if saving fails, the user is
 // never sent to a consent screen whose callback Relay would reject.
-func (s *Service) Start(ctx context.Context, tenantID string, provider Provider) (string, error) {
+// features add their scopes to the reading scopes, which Finish still requires.
+func (s *Service) Start(ctx context.Context, tenantID string, provider Provider, features ...Feature) (string, error) {
 	spec, ok := s.providers[provider]
 	if !ok {
 		return "", ErrUnsupportedProvider
@@ -167,8 +169,17 @@ func (s *Service) Start(ctx context.Context, tenantID string, provider Provider)
 
 	// Provider options first, then PKCE: S256 is added last so no provider
 	// spec can override the challenge.
-	opts := append(append([]oauth2.AuthCodeOption{}, spec.AuthOptions...), oauth2.S256ChallengeOption(verifier))
-	return spec.OAuth.AuthCodeURL(state, opts...), nil
+	cfg := *spec.OAuth
+	opts := append([]oauth2.AuthCodeOption{}, spec.AuthOptions...)
+	if len(features) > 0 {
+		cfg.Scopes = slices.Clone(cfg.Scopes)
+		for _, f := range features {
+			cfg.Scopes = append(cfg.Scopes, FeatureScope(provider, f))
+		}
+		opts = append(opts, spec.IncrementalOptions...)
+	}
+	opts = append(opts, oauth2.S256ChallengeOption(verifier))
+	return cfg.AuthCodeURL(state, opts...), nil
 }
 
 // Finish completes the callback (design.md A.3–5): consume state, exchange

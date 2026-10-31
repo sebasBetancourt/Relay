@@ -45,6 +45,7 @@ type StoredAccount struct {
 	RefreshNonce      []byte
 	ExpiresAt         time.Time // zero when no token row
 	HasTokens         bool
+	Scopes            []string // set by AccountForTenant only
 }
 
 // TokenUpdate is an encrypted access (and optional refresh) replacement.
@@ -72,7 +73,8 @@ func (s *Accounts) AccountForTenant(ctx context.Context, accountID, tenantID str
 	err := s.db.QueryRow(ctx, `
 		SELECT a.id::text, a.tenant_id::text, a.provider::text, a.provider_account_id,
 		       COALESCE(a.email, ''), a.status::text,
-		       t.access_token_enc, t.access_nonce, t.refresh_token_enc, t.refresh_nonce, t.expires_at
+		       t.access_token_enc, t.access_nonce, t.refresh_token_enc, t.refresh_nonce, t.expires_at,
+		       COALESCE(t.scopes, '{}')
 		FROM connected_accounts a
 		LEFT JOIN oauth_tokens t ON t.account_id = a.id
 		WHERE a.id = $1 AND a.tenant_id = $2`,
@@ -80,6 +82,7 @@ func (s *Accounts) AccountForTenant(ctx context.Context, accountID, tenantID str
 	).Scan(
 		&a.ID, &a.TenantID, &a.Provider, &a.ProviderAccountID, &a.Email, &a.Status,
 		&a.AccessEnc, &a.AccessNonce, &a.RefreshEnc, &a.RefreshNonce, &expiresAt,
+		&a.Scopes,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StoredAccount{}, ErrNotFound

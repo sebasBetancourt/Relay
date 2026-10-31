@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,12 +28,48 @@ const (
 // GoogleCalendarReadonly is the calendar scope v0.1 asks for (read events).
 const GoogleCalendarReadonly = "https://www.googleapis.com/auth/calendar.readonly"
 
+// GoogleCalendarEvents adds event writes. Google classes it as sensitive, so it
+// is asked for only when a tenant connects with FeatureCalendarWrite.
+const GoogleCalendarEvents = "https://www.googleapis.com/auth/calendar.events"
+
 // GoogleOpenID is required so the token response includes an id_token with
 // `sub`, the permanent Google account id used as provider_account_id.
 const GoogleOpenID = "openid"
 
 // GoogleEmail adds the account's email (and email_verified) to the id_token.
 const GoogleEmail = "email"
+
+// Feature is an optional capability a connect can ask for on top of reading.
+type Feature string
+
+// FeatureCalendarWrite lets the account create, edit and delete events.
+const FeatureCalendarWrite Feature = "calendar.write"
+
+var featureScopes = map[Feature]map[Provider]string{
+	FeatureCalendarWrite: {
+		ProviderGoogle:    GoogleCalendarEvents,
+		ProviderMicrosoft: MicrosoftCalendarsReadWrite,
+	},
+}
+
+// ParseFeature validates the name a client sent.
+func ParseFeature(name string) (Feature, bool) {
+	f := Feature(name)
+	_, ok := featureScopes[f]
+	return f, ok
+}
+
+// FeatureScope is the provider scope behind a feature.
+func FeatureScope(p Provider, f Feature) string { return featureScopes[f][p] }
+
+// HasFeature reports whether granted includes the feature's scope.
+func HasFeature(p Provider, f Feature, granted []string) bool {
+	scope := FeatureScope(p, f)
+	if p == ProviderMicrosoft {
+		return microsoftHasScope(scope)(granted)
+	}
+	return slices.Contains(granted, scope)
+}
 
 // Identity is who the connected provider account is.
 type Identity struct {
@@ -51,6 +88,9 @@ type ProviderSpec struct {
 	// AuthOptions are provider-specific consent URL parameters
 	// (state and PKCE are always added by Start).
 	AuthOptions []oauth2.AuthCodeOption
+	// IncrementalOptions are added to the consent URL when a connect asks for
+	// a feature, so a new grant keeps what the user already accepted.
+	IncrementalOptions []oauth2.AuthCodeOption
 	// RequiredScope must be granted, or Finish returns ErrInsufficientScope.
 	RequiredScope string
 	// HasScope reports whether RequiredScope is among the granted scopes.
@@ -98,9 +138,10 @@ func GoogleSpec(clientID, clientSecret, redirectURL string) ProviderSpec {
 			oauth2.AccessTypeOffline, // access_type=offline → Google returns a refresh_token
 			oauth2.ApprovalForce,     // prompt=consent → refresh_token even on reconnect
 		},
-		RequiredScope: GoogleCalendarReadonly,
-		Identify:      googleIdentify,
-		Revoke:        GoogleRevoke(GoogleRevokeURL),
+		IncrementalOptions: []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("include_granted_scopes", "true")},
+		RequiredScope:      GoogleCalendarReadonly,
+		Identify:           googleIdentify,
+		Revoke:             GoogleRevoke(GoogleRevokeURL),
 	}
 }
 

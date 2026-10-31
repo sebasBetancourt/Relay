@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/sebasBetancourt/relay/internal/httpapi/middleware"
@@ -14,7 +15,7 @@ import (
 
 // Connector is what the connect handler needs from internal/connect.
 type Connector interface {
-	Start(ctx context.Context, tenantID string, provider oauth.Provider) (string, error)
+	Start(ctx context.Context, tenantID string, provider oauth.Provider, features ...oauth.Feature) (string, error)
 }
 
 // handleConnect starts an OAuth connect (design.md, Request flow A.1–2).
@@ -33,7 +34,13 @@ func handleConnect(log *slog.Logger, c Connector) http.HandlerFunc {
 		}
 		provider := oauth.Provider(r.PathValue("provider"))
 
-		authURL, err := c.Start(r.Context(), tenant.ID, provider)
+		features, ok := parseFeatures(r.URL.Query().Get("features"))
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, queryErrorBody{Error: "invalid_query", Detail: "features must be a comma-separated list of: calendar.write"})
+			return
+		}
+
+		authURL, err := c.Start(r.Context(), tenant.ID, provider, features...)
 		switch {
 		case err == nil:
 		case errors.Is(err, oauth.ErrUnsupportedProvider):
@@ -72,4 +79,21 @@ func handleConnect(log *slog.Logger, c Connector) http.HandlerFunc {
 		}
 		http.Redirect(w, r, authURL, http.StatusFound)
 	}
+}
+
+func parseFeatures(raw string) ([]oauth.Feature, bool) {
+	if raw == "" {
+		return nil, true
+	}
+	var out []oauth.Feature
+	for name := range strings.SplitSeq(raw, ",") {
+		f, ok := oauth.ParseFeature(strings.TrimSpace(name))
+		if !ok {
+			return nil, false
+		}
+		if !slices.Contains(out, f) {
+			out = append(out, f)
+		}
+	}
+	return out, true
 }

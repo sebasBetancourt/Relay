@@ -36,6 +36,7 @@ var (
 type AccessToken struct {
 	Value    string
 	Provider Provider
+	Scopes   []string // as granted at connect
 }
 
 // tokenAAD binds ciphertext to table + tenant + provider account + column.
@@ -102,11 +103,13 @@ func (s *Service) token(ctx context.Context, tenantID, accountID string, force b
 		return AccessToken{}, err
 	}
 	if !force && time.Until(acct.ExpiresAt) > refreshSkew {
-		return AccessToken{Value: access, Provider: Provider(acct.Provider)}, nil
+		return AccessToken{Value: access, Provider: Provider(acct.Provider), Scopes: acct.Scopes}, nil
 	}
 	// ahead 0: this caller already decided the token must be refreshed
 	// (within 60s, or a forced retry after a provider 401).
-	return s.refresh(ctx, acct, 0)
+	tok, err := s.refresh(ctx, acct, 0)
+	tok.Scopes = acct.Scopes
+	return tok, err
 }
 
 // refresh coordinates at two levels: singleflight collapses concurrent
