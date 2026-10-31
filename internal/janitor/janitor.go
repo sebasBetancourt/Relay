@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// Purger deletes expired rows in batches. *store.OAuthStates implements it.
+// Purger deletes expired rows in batches. *store.OAuthStates and
+// *store.Idempotency implement it.
 type Purger interface {
 	DeleteExpired(ctx context.Context, limit int) (int64, error)
 }
@@ -15,6 +16,7 @@ type Purger interface {
 // Config for Run.
 type Config struct {
 	Log      *slog.Logger
+	Name     string // for logs; default "oauth states"
 	Purger   Purger
 	Interval time.Duration // default 10m
 	Batch    int           // default 1000
@@ -36,7 +38,12 @@ func Run(ctx context.Context, cfg Config) {
 		batch = 1000
 	}
 
-	purge(ctx, log, cfg.Purger, batch)
+	name := cfg.Name
+	if name == "" {
+		name = "oauth states"
+	}
+
+	purge(ctx, log, name, cfg.Purger, batch)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -45,17 +52,17 @@ func Run(ctx context.Context, cfg Config) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			purge(ctx, log, cfg.Purger, batch)
+			purge(ctx, log, name, cfg.Purger, batch)
 		}
 	}
 }
 
-func purge(ctx context.Context, log *slog.Logger, p Purger, batch int) {
+func purge(ctx context.Context, log *slog.Logger, name string, p Purger, batch int) {
 	var total int64
 	for {
 		n, err := p.DeleteExpired(ctx, batch)
 		if err != nil {
-			log.Warn("oauth states purge failed", "err", err)
+			log.Warn(name+" purge failed", "err", err)
 			return
 		}
 		total += n
@@ -64,6 +71,6 @@ func purge(ctx context.Context, log *slog.Logger, p Purger, batch int) {
 		}
 	}
 	if total > 0 {
-		log.Info("oauth states purged", "deleted", total)
+		log.Info(name+" purged", "deleted", total)
 	}
 }
