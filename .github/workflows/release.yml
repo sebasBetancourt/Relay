@@ -21,7 +21,7 @@ jobs:
       contents: write # create the GitHub release
       packages: write # push ghcr.io/sebasbetancourt/relay
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # GoReleaser needs the full history and tags
 
