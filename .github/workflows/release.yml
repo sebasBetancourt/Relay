@@ -29,6 +29,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: The spec's version follows the tag
+        run: |
+          spec="$(awk '/^  version:/ { print $2; exit }' api/openapi.yaml)"
+          if [ "$spec" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::api/openapi.yaml says $spec, the tag says ${GITHUB_REF_NAME#v}"
+            exit 1
+          fi
+
       - name: Release notes from CHANGELOG.md
         run: |
           version="${GITHUB_REF_NAME#v}"

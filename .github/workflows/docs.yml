@@ -1,0 +1,45 @@
+name: Docs
+
+# Publishes the API reference to GitHub Pages whenever the spec changes.
+on:
+  push:
+    branches: [master]
+    paths:
+      - api/openapi.yaml
+      - redocly.yaml
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer spec replaces a deploy still running.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the reference
+        run: |
+          mkdir -p site
+          npx --yes @redocly/cli@1 build-docs api/openapi.yaml -o site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # publish the artifact
+      id-token: write # prove the deploy came from this repository
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
