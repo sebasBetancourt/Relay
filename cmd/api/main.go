@@ -154,6 +154,8 @@ func main() {
 		log.Info("rate limit shared through redis")
 	}
 
+	idempotency := store.NewIdempotency(pool)
+
 	deps := httpapi.Deps{
 		Log:      log,
 		DB:       pool,
@@ -162,6 +164,9 @@ func main() {
 		Connect:  oauthSvc,
 		Callback: oauthSvc,
 		Calendar: calendarSvc,
+
+		CalendarWrite: calendarSvc,
+		Idempotency:   idempotency,
 
 		Accounts:   accounts,
 		Disconnect: oauthSvc,
@@ -187,7 +192,7 @@ func main() {
 	// or their last query fails with "pool closed".
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	if notifySvc != nil {
 		wg.Add(2)
 	}
@@ -199,6 +204,16 @@ func main() {
 		janitor.Run(bgCtx, janitor.Config{
 			Log:      log,
 			Purger:   oauthStates,
+			Interval: 10 * time.Minute,
+			Batch:    1000,
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		janitor.Run(bgCtx, janitor.Config{
+			Log:      log,
+			Name:     "idempotency keys",
+			Purger:   idempotency,
 			Interval: 10 * time.Minute,
 			Batch:    1000,
 		})

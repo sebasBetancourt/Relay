@@ -22,6 +22,10 @@ type Deps struct {
 	Connect  Connector
 	Callback Callbacker
 	Calendar CalendarReader
+	// CalendarWrite adds the event write routes; nil leaves them unregistered.
+	// Idempotency is optional: without it, Idempotency-Key is ignored.
+	CalendarWrite CalendarWriter
+	Idempotency   IdempotencyStore
 	// Accounts lists the tenant's connected accounts; Disconnect removes one.
 	Accounts   AccountLister
 	Disconnect Disconnector
@@ -84,6 +88,11 @@ func NewRouter(d Deps) http.Handler {
 	v1.HandleFunc("GET /v1/me", handleMe)
 	v1.HandleFunc("GET /v1/connect/{provider}", handleConnect(log, d.Connect))
 	v1.HandleFunc("GET /v1/calendars/{id}/events", handleListEvents(log, d.Calendar))
+	if d.CalendarWrite != nil {
+		v1.HandleFunc("POST /v1/calendars/{id}/events", handleCreateEvent(log, d.CalendarWrite, d.Idempotency))
+		v1.HandleFunc("PATCH /v1/calendars/{id}/events/{event_id}", handleUpdateEvent(log, d.CalendarWrite, d.Idempotency))
+		v1.HandleFunc("DELETE /v1/calendars/{id}/events/{event_id}", handleDeleteEvent(log, d.CalendarWrite, d.Idempotency))
+	}
 	v1.HandleFunc("GET /v1/accounts", handleListAccounts(log, d.Accounts))
 	v1.HandleFunc("DELETE /v1/accounts/{id}", handleDisconnectAccount(log, d.Disconnect))
 	mux.Handle("/v1/", middleware.RequireAPIKey(log, d.Tenants, d.Env, rl)(rl.PerTenant(v1)))
