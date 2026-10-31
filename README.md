@@ -47,6 +47,7 @@ curl -H "Authorization: Bearer $RELAY_KEY" \
   - Fails fast on bad config.
   - Health and readiness probes, structured JSON logs with request ids.
   - Background cleanup of expired OAuth states.
+  - Per-tenant rate limits that survive a Redis outage.
 - **Tested end to end.** Every flow runs against stateful fake Google and Microsoft servers in CI, with no real accounts needed.
 
 ## How it works
@@ -135,6 +136,10 @@ All `/v1` routes except the OAuth callback and the webhook endpoints take `Autho
 - **[API guide](docs/api.md)**: every endpoint with `curl` examples, paging and the full error table.
 - **[OpenAPI 3.1 spec](api/openapi.yaml)**: the formal contract, ready for Swagger UI, Postman or client generators.
 
+## Rate limits
+
+Each tenant has a request budget (600 per minute with a burst of 100 by default, adjustable per tenant) enforced in Redis, so it holds across replicas and one noisy customer cannot starve the others. Over the limit, clients get `429` with `Retry-After` and standard `RateLimit` headers. Details in the [API guide](docs/api.md#rate-limits).
+
 ## Configuration
 
 Set through environment variables (see [`.env.example`](.env.example)). The API checks everything at startup and lists every problem at once.
@@ -150,6 +155,9 @@ Set through environment variables (see [`.env.example`](.env.example)). The API 
 | `MICROSOFT_EXPIRATION_DATE` | no | Client secret expiry (`YYYY-MM-DD`): warns 30 days before, refuses to start after |
 | `PORT`, `LOG_LEVEL` | no | `8080`, `info` |
 | `WEBHOOK_BASE_URL` | no | Public `https` origin for calendar push. Empty keeps polling |
+| `REDIS_URL` | no | Shares rate limit budgets across replicas. Empty keeps one budget per replica. If Redis fails, the API keeps serving with a local limit |
+| `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_BURST` | no | Per tenant: `600`, `100` |
+| `RATE_LIMIT_IP_PER_MINUTE`, `RATE_LIMIT_IP_BURST` | no | Per IP, on the OAuth callback and requests without a valid key: `1200`, `200` |
 | `NATS_URL` | no | JetStream. Required when `WEBHOOK_BASE_URL` is set. When set, delta sync consumes `relay.sync.account`. Empty leaves async work off, and startup says so. Failed jobs land in `RELAY_DLQ`; `relayctl dlq list` and `relayctl dlq replay <seq>` inspect and requeue them |
 
 ## Documentation

@@ -140,10 +140,41 @@ Expired access tokens are refreshed silently: 60s skew, singleflight per account
 | Account revoked / refresh invalid / MFA required | 409 | `account_revoked` |
 | Account disconnected by the tenant | 409 | `account_disconnected` |
 | Microsoft account without an Outlook mailbox | 409 | `calendar_unavailable` |
+| Relay rate limit | 429 | `rate_limited` (+ `Retry-After`) |
 | Provider rate limit | 429 | `provider_rate_limited` (+ `Retry-After`) |
 | Provider down / timeout | 502 | `provider_unavailable` |
 | Unexpected provider response | 502 | `provider_error` |
 | DB / decrypt failure | 500 | `internal error` |
+
+## Rate limits
+
+Every authenticated `/v1` request spends from the tenant's budget, shared by all replicas. Past it, Relay answers **429**:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 1
+RateLimit-Policy: "tenant";q=600;w=60
+RateLimit: "tenant";r=0;t=1
+
+{"error":"rate_limited"}
+```
+
+Allowed responses carry the same `RateLimit-Policy` and `RateLimit` headers (`r` is what remains, `t` the seconds until the budget is full), so a client can slow down before it is refused.
+
+| Who | Counts against | Default | Variables |
+| --- | --- | --- | --- |
+| Valid API key | The tenant | 600 per minute, burst 100 | `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_BURST` |
+| OAuth callback, or a request without a valid key | The client IP | 1200 per minute, burst 200 | `RATE_LIMIT_IP_PER_MINUTE`, `RATE_LIMIT_IP_BURST` |
+
+- `/healthz` and `/readyz` are never limited. The provider webhooks have their own per-IP limit.
+- A request without a valid key gets its usual `401` until the IP budget is spent, then `429`.
+- Give one tenant its own limit in SQL. `NULL` goes back to the global value, and the change reaches every replica within 30 seconds. The burst is capped to the override:
+
+  ```sql
+  UPDATE tenants SET rate_limit_per_minute = 6000 WHERE id = '<tenant id>';
+  ```
+
+- This protects Relay and its tenants from each other, not the provider quotas. A provider's own throttling still arrives as `provider_rate_limited`.
 
 ## Manage connected accounts
 

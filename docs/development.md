@@ -30,6 +30,14 @@ TEST_DATABASE_URL='postgres://relay:relay@localhost:5435/relay?sslmode=disable' 
   go test -race -count=1 ./test/e2e
 ```
 
+Rate limit tests that need a shared budget also read `TEST_REDIS_URL` and skip without it. Compose publishes Redis on `:6380`:
+
+```bash
+TEST_DATABASE_URL='postgres://relay:relay@localhost:5435/relay?sslmode=disable' \
+TEST_REDIS_URL='redis://localhost:6380/0' \
+  go test -race -count=1 ./test/e2e -run RateLimit
+```
+
 | Kind | Where | Needs Postgres |
 | --- | --- | --- |
 | Unit | `*_test.go` next to the code they test | No |
@@ -68,6 +76,7 @@ internal/
   refresher/                background renewal of access tokens about to expire
   notify/                   calendar push: subscribe, verify webhooks, renew
   sync/                     delta sync: cursors, idempotent upserts, periodic catch-up
+  ratelimit/                budgets: GCRA in Redis, local limiter, failover between them
   queue/                    job contract (publish, consume, dead letters)
     natsq/                  NATS JetStream: RELAY_JOBS, RELAY_DLQ, backoff, drain
   buildinfo/                version stamped at build time

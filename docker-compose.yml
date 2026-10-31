@@ -47,12 +47,21 @@ services:
       # Empty disables push. Set a public https origin to subscribe calendars.
       WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-600}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-100}
+      RATE_LIMIT_IP_PER_MINUTE: ${RATE_LIMIT_IP_PER_MINUTE:-1200}
+      RATE_LIMIT_IP_BURST: ${RATE_LIMIT_IP_BURST:-200}
     ports:
       - "8080:8080"
     depends_on:
       migrate:
         condition: service_completed_successfully
       nats:
+        condition: service_started
+      # service_started, not healthy: the API runs without Redis (it falls
+      # back to a local limit), so Redis must not hold back its start.
+      redis:
         condition: service_started
 
   nats:
@@ -62,6 +71,18 @@ services:
       - "4222:4222"
     volumes:
       - natsdata:/data
+
+  # Rate limit budgets only: losing them is harmless, so nothing is persisted.
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # UI for Postgres: docker compose --profile tools up -d adminer
   # Open http://localhost:8081  → System: PostgreSQL, Server: postgres, User/Pass/DB: relay

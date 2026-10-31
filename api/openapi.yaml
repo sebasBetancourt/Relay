@@ -99,11 +99,14 @@ paths:
         "200":
           description: The calling tenant.
           headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Tenant" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /v1/connect/{provider}:
     get:
@@ -124,6 +127,8 @@ paths:
         "200":
           description: Consent URL (when `Accept` includes `application/json`).
           headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
           content:
@@ -139,6 +144,8 @@ paths:
         "302":
           description: Redirect to the provider's consent screen.
           headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
             Location:
               description: The consent URL.
               schema: { type: string, format: uri }
@@ -153,6 +160,7 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
               example: { error: unsupported_provider }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /v1/oauth/{provider}/callback:
@@ -176,6 +184,8 @@ paths:
         "200":
           description: The account is connected (or reconnected; the `account_id` is stable).
           headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
             Cache-Control: { $ref: "#/components/headers/NoStore" }
           content:
@@ -208,6 +218,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
         "502": { $ref: "#/components/responses/ProviderError" }
 
@@ -357,6 +368,8 @@ paths:
         "200":
           description: One page of accounts.
           headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
             Cache-Control: { $ref: "#/components/headers/PrivateNoStore" }
           content:
@@ -364,6 +377,7 @@ paths:
               schema: { $ref: "#/components/schemas/AccountsPage" }
         "400": { $ref: "#/components/responses/InvalidQuery" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /v1/accounts/{id}:
@@ -381,9 +395,12 @@ paths:
         "204":
           description: Disconnected (or already was).
           headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /v1/calendars/{id}/events:
@@ -410,6 +427,8 @@ paths:
         "200":
           description: One page of events.
           headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
             Cache-Control: { $ref: "#/components/headers/PrivateNoStore" }
           content:
@@ -429,10 +448,15 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
-          description: "`provider_rate_limited`: the provider is throttling; retry after `Retry-After` seconds."
+          description: |
+            - `rate_limited`: this tenant's budget is spent.
+            - `provider_rate_limited`: the provider is throttling.
+
+            Retry after `Retry-After` seconds.
           headers:
-            Retry-After:
-              schema: { type: integer, minimum: 0 }
+            Retry-After: { $ref: "#/components/headers/RetryAfter" }
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
             X-Request-ID: { $ref: "#/components/headers/RequestID" }
           content:
             application/json:
@@ -467,6 +491,15 @@ components:
       schema: { type: string }
     NoStore:
       schema: { type: string, const: no-store }
+    RateLimit:
+      description: Budget left and seconds until it refills (draft-ietf-httpapi-ratelimit-headers).
+      schema: { type: string, examples: ['"tenant";r=99;t=1'] }
+    RateLimitPolicy:
+      description: The applied quota per 60 second window. Policy `tenant` or `ip`.
+      schema: { type: string, examples: ['"tenant";q=600;w=60'] }
+    RetryAfter:
+      description: Seconds to wait before retrying. Always at least 1.
+      schema: { type: integer, minimum: 1 }
     PrivateNoStore:
       schema: { type: string, const: "private, no-store" }
 
@@ -481,6 +514,19 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
           example: { error: unauthorized }
+    RateLimited:
+      description: |
+        `rate_limited`: the budget is spent. Authenticated requests count per
+        tenant. The OAuth callback and requests without a valid key count per IP.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+        RateLimit: { $ref: "#/components/headers/RateLimit" }
+        RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: rate_limited }
     NotFound:
       description: No such account for this tenant (including other tenants' accounts).
       headers:
