@@ -56,7 +56,7 @@ curl -H "Authorization: Bearer $(cat acme.key)" -H "Accept: application/json" \
 | Consent URL created | `302` (or `200` JSON with `Accept: application/json`) |
 | Missing or invalid API key | `401 {"error":"unauthorized"}` |
 | Unknown or not yet enabled provider | `400 {"error":"unsupported_provider"}` |
-| Database failure | `500 {"error":"internal error"}` |
+| Database failure | `500 {"error":"internal_error"}` |
 
 Relay stores a one-time `state` and the PKCE `code_verifier` in `oauth_states` for 10 minutes; only the `code_challenge` (SHA-256 of the verifier) travels in the URL. Scopes are `openid` + `calendar.readonly`, with `access_type=offline` and `prompt=consent` so Google returns a refresh token and an `id_token`.
 
@@ -82,7 +82,7 @@ Tokens are encrypted (AES-256-GCM) and never returned in the body. Reloading the
 | Bad `id_token` | `502` | `provider_error` |
 | Google down / timeout | `502` | `provider_unavailable` |
 | Account owned by another tenant | `409` | `account_already_connected` |
-| DB / vault failure | `500` | `internal error` |
+| DB / vault failure | `500` | `internal_error` |
 
 ## Read events
 
@@ -144,7 +144,7 @@ Expired access tokens are refreshed silently: 60s skew, singleflight per account
 | Provider rate limit | 429 | `provider_rate_limited` (+ `Retry-After`) |
 | Provider down / timeout | 502 | `provider_unavailable` |
 | Unexpected provider response | 502 | `provider_error` |
-| DB / decrypt failure | 500 | `internal error` |
+| DB / decrypt failure | 500 | `internal_error` |
 
 ## Write events
 
@@ -203,6 +203,34 @@ Anything the providers would not store identically is refused with `400`, and no
 
 **Concurrent edits.** Every event carries a `version`. Send it as `If-Match` on `PATCH`, and if someone changed the event since, the answer is **412** `version_conflict` and nothing changes.
 
+## Compatibility
+
+From v1.0, `/v1` follows [semantic versioning](https://semver.org/). A breaking change only happens in a new major version, under a new path (`/v2`). The contract is [`api/openapi.yaml`](../api/openapi.yaml), and tests check every response against it.
+
+**Not breaking**, so these can arrive in any minor version. Write your client to tolerate them:
+
+- new endpoints, and new optional parameters or body fields;
+- new fields in a response;
+- new `error` codes, on a status a route already documents or on a new failure;
+- new values in `status`, `provider` and other strings a client reads;
+- higher limits.
+
+**Breaking**, so these only happen in `/v2`:
+
+- removing or renaming an endpoint, parameter or response field;
+- changing a field's type or meaning, or the format of a value;
+- making an optional input required;
+- changing the status or the `error` code of an existing case;
+- refusing a request that used to be accepted, unless it was a bug or a security problem.
+
+Some things are not part of the contract:
+
+- the text of `detail`, which is for people: match on `error`, never on `detail`;
+- the contents of `page_token`, which is opaque and only valid for the paging it came from;
+- the exact budget of a rate limit, which depends on the deployment. The format of the `RateLimit` headers follows an IETF draft and may follow it as it changes;
+- the set of accepted recurrences and time zones may grow, so a request refused today may be accepted later;
+- an event's `version`, which you can only compare or send back as `If-Match`.
+
 ## Rate limits
 
 Every authenticated `/v1` request spends from the tenant's budget, shared by all replicas. Past it, Relay answers **429**:
@@ -237,15 +265,15 @@ Allowed responses carry the same `RateLimit-Policy` and `RateLimit` headers (`r`
 
 ```bash
 # List the tenant's accounts (no tokens, ever)
-curl -s -H "Authorization: Bearer $(cat acme.key)" "localhost:8080/v1/accounts?limit=50" | jq
-# {"accounts":[{"id":"…","provider":"microsoft","email":"ana@outlook.com","status":"active","connected_at":"…"}],"next_cursor":"…"}
+curl -s -H "Authorization: Bearer $(cat acme.key)" "localhost:8080/v1/accounts?max_results=50" | jq
+# {"accounts":[{"id":"…","provider":"microsoft","email":"ana@outlook.com","status":"active","connected_at":"…"}],"next_page_token":"…"}
 
 # Disconnect one
 curl -i -X DELETE -H "Authorization: Bearer $(cat acme.key)" localhost:8080/v1/accounts/<account_id>
 # 204 No Content
 ```
 
-- `GET /v1/accounts`: `limit` 1–100 (default 50). Pass `cursor=<next_cursor>` for the next page; the cursor is absent on the last page. `status` is `active`, `revoked` (the provider rejected the refresh token) or `disconnected`.
+- `GET /v1/accounts`: `max_results` 1–100 (default 50). Pass `page_token=<next_page_token>` for the next page; `next_page_token` is absent on the last page. `status` is `active`, `revoked` (the provider rejected the refresh token) or `disconnected`.
 - `DELETE /v1/accounts/{id}`: stops the calendar push subscription (best effort), deletes the tokens and the stored calendar copy, and marks the account `disconnected` (204). It is idempotent and the account can be connected again.
   - Google tokens are also revoked at Google (best effort; a Google outage never blocks the disconnect).
   - Microsoft has no per-app revocation endpoint: users remove the app at account.microsoft.com → Privacy → Apps and services.

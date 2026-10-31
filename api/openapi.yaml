@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Relay API
-  version: 0.1.0
+  version: 1.0.0
   summary: One API for Google Calendar and Outlook.
   description: |
     Relay connects your users' Google and Microsoft (Outlook / Microsoft 365)
@@ -384,10 +384,10 @@ paths:
       tags: [Accounts]
       operationId: listAccounts
       summary: List the tenant's connected accounts
-      description: Never includes tokens. Ordered by connection time; pass `next_cursor` back as `cursor` until it is absent.
+      description: Never includes tokens. Ordered by connection time; pass `next_page_token` back as `page_token` until it is absent.
       parameters:
-        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
-        - { name: cursor, in: query, description: Opaque `next_cursor` from the previous page., schema: { type: string } }
+        - { name: max_results, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: page_token, in: query, description: Opaque `next_page_token` from the previous page., schema: { type: string } }
       responses:
         "200":
           description: One page of accounts.
@@ -774,7 +774,7 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
-          example: { error: internal error }
+          example: { error: internal_error }
 
   schemas:
     Provider:
@@ -835,7 +835,7 @@ components:
         accounts:
           type: array
           items: { $ref: "#/components/schemas/Account" }
-        next_cursor:
+        next_page_token:
           type: string
           description: Absent on the last page.
 
