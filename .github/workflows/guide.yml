@@ -1,0 +1,36 @@
+name: Guide
+
+# Runs CONTRIBUTING.md on a clean machine, so a new contributor's first hour
+# does not depend on anyone remembering to update it.
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays
+  pull_request:
+    paths:
+      - CONTRIBUTING.md
+      - docker-compose.yml
+      - .env.example
+      - migrations/**
+      - scripts/check-guide.sh
+      - .github/workflows/guide.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  follow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false # a newcomer has no cache either
+
+      - name: Install the tools the guide requires
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+
+      - name: Follow CONTRIBUTING.md
+        run: scripts/check-guide.sh
