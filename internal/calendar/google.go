@@ -54,12 +54,16 @@ type googleEventsResponse struct {
 }
 
 type googleEvent struct {
-	ID        string         `json:"id"`
-	Summary   string         `json:"summary"`
-	Location  string         `json:"location"`
-	Start     googleDateTime `json:"start"`
-	End       googleDateTime `json:"end"`
-	Organizer *googlePerson  `json:"organizer"`
+	ID               string         `json:"id"`
+	Etag             string         `json:"etag"`
+	Status           string         `json:"status"`
+	Summary          string         `json:"summary"`
+	Location         string         `json:"location"`
+	Start            googleDateTime `json:"start"`
+	End              googleDateTime `json:"end"`
+	Organizer        *googlePerson  `json:"organizer"`
+	RecurringEventID string         `json:"recurringEventId"`
+	Recurrence       []string       `json:"recurrence"`
 }
 
 type googleDateTime struct {
@@ -127,21 +131,32 @@ func (g *GoogleSource) ListEvents(ctx context.Context, accessToken string, q Que
 		return Page{}, ErrProviderBadResponse
 	}
 
-	switch {
-	case res.StatusCode == http.StatusOK:
+	if res.StatusCode == http.StatusOK {
 		return parseGoogleEvents(body)
-	case res.StatusCode == http.StatusUnauthorized:
-		return Page{}, ErrTokenRejected
-	case res.StatusCode == http.StatusNotFound:
-		return Page{}, ErrCalendarNotFound
-	case res.StatusCode == http.StatusTooManyRequests:
-		return Page{}, &RateLimitedError{RetryAfter: parseRetryAfter(res.Header.Get("Retry-After"))}
-	case res.StatusCode == http.StatusForbidden && isGoogleRateLimit(body):
-		return Page{}, &RateLimitedError{RetryAfter: parseRetryAfter(res.Header.Get("Retry-After"))}
-	case res.StatusCode >= 500:
-		return Page{}, fmt.Errorf("%w: status %d", ErrProviderUnavailable, res.StatusCode)
+	}
+	return Page{}, googleStatusError(res.StatusCode, res.Header, body)
+}
+
+// googleStatusError maps a non-success answer. A deleted event answers 410 on
+// a write, which means the same to a client as 404.
+func googleStatusError(status int, header http.Header, body []byte) error {
+	switch {
+	case status == http.StatusUnauthorized:
+		return ErrTokenRejected
+	case status == http.StatusNotFound, status == http.StatusGone:
+		return ErrCalendarNotFound
+	case status == http.StatusPreconditionFailed:
+		return ErrVersionConflict
+	case status == http.StatusTooManyRequests:
+		return &RateLimitedError{RetryAfter: parseRetryAfter(header.Get("Retry-After"))}
+	case status == http.StatusForbidden && isGoogleRateLimit(body):
+		return &RateLimitedError{RetryAfter: parseRetryAfter(header.Get("Retry-After"))}
+	case status == http.StatusForbidden && isGoogleScopeError(body):
+		return ErrScopeRejected
+	case status >= 500:
+		return fmt.Errorf("%w: status %d", ErrProviderUnavailable, status)
 	default:
-		return Page{}, fmt.Errorf("%w: status %d", ErrProviderBadResponse, res.StatusCode)
+		return fmt.Errorf("%w: status %d", ErrProviderBadResponse, status)
 	}
 }
 
@@ -163,6 +178,7 @@ func normalizeGoogleEvent(item googleEvent, calTZ string) Event {
 		Title:    item.Summary, // empty stays empty — do not invent a title
 		Location: item.Location,
 		Provider: "google",
+		Version:  strings.Trim(item.Etag, `"`),
 	}
 	if item.Organizer != nil && (item.Organizer.Email != "" || item.Organizer.DisplayName != "") {
 		ev.Organizer = &Organizer{Email: item.Organizer.Email, Name: item.Organizer.DisplayName}
@@ -192,6 +208,19 @@ func isGoogleRateLimit(body []byte) bool {
 	}
 	for _, e := range eb.Error.Errors {
 		if e.Reason == "rateLimitExceeded" || e.Reason == "userRateLimitExceeded" {
+			return true
+		}
+	}
+	return false
+}
+
+func isGoogleScopeError(body []byte) bool {
+	var eb googleErrorBody
+	if err := json.Unmarshal(body, &eb); err != nil {
+		return false
+	}
+	for _, e := range eb.Error.Errors {
+		if e.Reason == "insufficientPermissions" {
 			return true
 		}
 	}

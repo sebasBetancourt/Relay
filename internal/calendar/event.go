@@ -25,6 +25,9 @@ type Event struct {
 	Location  string     `json:"location,omitempty"`
 	Organizer *Organizer `json:"organizer,omitempty"`
 	Provider  string     `json:"provider"`
+	// Version is the Google etag or Graph changeKey. Send it as If-Match on
+	// PATCH to refuse an edit made on a stale copy.
+	Version string `json:"version,omitempty"`
 }
 
 // Query is the list window and pagination.

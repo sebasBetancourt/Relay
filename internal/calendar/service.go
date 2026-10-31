@@ -70,6 +70,103 @@ func (s *Service) ListEvents(ctx context.Context, tenantID, accountID string, q 
 	return page, nil
 }
 
+// CreateEvent validates in and creates it on the account's provider.
+func (s *Service) CreateEvent(ctx context.Context, tenantID, accountID string, in EventInput) (Event, error) {
+	change, err := ChangeFromInput(in)
+	if err != nil {
+		return Event{}, err
+	}
+	var ev Event
+	err = s.write(ctx, tenantID, accountID, func(w Writer, token string) error {
+		var err error
+		ev, err = w.CreateEvent(ctx, token, change)
+		return err
+	})
+	return ev, err
+}
+
+// UpdateEvent applies p. version is the client's If-Match, "" for none.
+// The extra read is what refuses a single occurrence: the provider would
+// accept the edit and leave the series split.
+func (s *Service) UpdateEvent(ctx context.Context, tenantID, accountID, eventID string, p EventPatch, version string) (Event, error) {
+	change, err := ChangeFromPatch(p)
+	if err != nil {
+		return Event{}, err
+	}
+	var ev Event
+	err = s.write(ctx, tenantID, accountID, func(w Writer, token string) error {
+		kind, err := w.EventKind(ctx, token, eventID)
+		if err != nil {
+			return err
+		}
+		if kind == KindOccurrence {
+			return errOccurrence
+		}
+		// A new time without its pattern may leave the series starting
+		// outside it, and the providers disagree on what happens then.
+		if kind == KindSeries && change.schedule != nil && change.rule == nil {
+			return unsupported("moving a recurring event needs its recurrence in the same request")
+		}
+		ev, err = w.UpdateEvent(ctx, token, eventID, change, version)
+		return err
+	})
+	return ev, err
+}
+
+// DeleteEvent removes a single event or a whole series.
+func (s *Service) DeleteEvent(ctx context.Context, tenantID, accountID, eventID string) error {
+	return s.write(ctx, tenantID, accountID, func(w Writer, token string) error {
+		kind, err := w.EventKind(ctx, token, eventID)
+		if err != nil {
+			return err
+		}
+		if kind == KindOccurrence {
+			return errOccurrence
+		}
+		return w.DeleteEvent(ctx, token, eventID)
+	})
+}
+
+var errOccurrence = unsupported("a single occurrence cannot be changed: change the whole series with the id returned on create")
+
+// write checks the stored scopes first, so an account connected read-only gets
+// 403 with the way out, and retries once after a 401 like list does. A retry
+// is safe here: a 401 means the provider processed nothing.
+func (s *Service) write(ctx context.Context, tenantID, accountID string, fn func(Writer, string) error) error {
+	tok, err := s.tokens.AccessToken(ctx, tenantID, accountID)
+	if err != nil {
+		return err
+	}
+	missing := &InsufficientScopeError{
+		Provider: string(tok.Provider),
+		Required: []string{oauth.FeatureScope(tok.Provider, oauth.FeatureCalendarWrite)},
+	}
+	if !oauth.HasFeature(tok.Provider, oauth.FeatureCalendarWrite, tok.Scopes) {
+		return missing
+	}
+	w, ok := s.sources[tok.Provider].(Writer)
+	if !ok {
+		return fmt.Errorf("write event: no writer for provider %q", tok.Provider)
+	}
+
+	err = fn(w, tok.Value)
+	if errors.Is(err, ErrTokenRejected) {
+		tok, err = s.tokens.RefreshAccessToken(ctx, tenantID, accountID)
+		if err != nil {
+			return err
+		}
+		err = fn(w, tok.Value)
+		if errors.Is(err, ErrTokenRejected) {
+			return fmt.Errorf("%w: still 401 after refresh", ErrProviderBadResponse)
+		}
+	}
+	if errors.Is(err, ErrScopeRejected) {
+		// The user can narrow a grant after connecting.
+		return missing
+	}
+	return err
+}
+
 // maxEmptyPageHops bounds how many empty provider pages one request skips.
 const maxEmptyPageHops = 5
 

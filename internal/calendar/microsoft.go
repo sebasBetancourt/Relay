@@ -16,7 +16,7 @@ import (
 const (
 	microsoftGraphURL = "https://graph.microsoft.com"
 	maxGraphBody      = 5 << 20 // 5 MiB
-	graphEventsSelect = "id,subject,start,end,isAllDay,isCancelled,location,organizer,originalStartTimeZone"
+	graphEventsSelect = "id,changeKey,subject,start,end,isAllDay,isCancelled,location,organizer,originalStartTimeZone"
 	// Graph wall-clock times: "2026-10-20T14:00:00.0000000" (no offset).
 	graphDateTimeLayout = "2006-01-02T15:04:05.9999999"
 )
@@ -43,6 +43,7 @@ type graphEventsResponse struct {
 
 type graphEvent struct {
 	ID                    string        `json:"id"`
+	ChangeKey             string        `json:"changeKey"`
 	Subject               string        `json:"subject"`
 	IsAllDay              bool          `json:"isAllDay"`
 	IsCancelled           bool          `json:"isCancelled"`
@@ -121,24 +122,35 @@ func (m *MicrosoftSource) ListEvents(ctx context.Context, accessToken string, q 
 		return Page{}, ErrProviderBadResponse
 	}
 
-	retryAfter := res.Header.Get("Retry-After")
-	switch {
-	case res.StatusCode == http.StatusOK:
+	if res.StatusCode == http.StatusOK {
 		return parseGraphEvents(body)
-	case res.StatusCode == http.StatusUnauthorized:
-		return Page{}, ErrTokenRejected
-	case graphErrorCode(body) == "MailboxNotEnabledForRESTAPI":
-		return Page{}, ErrCalendarUnavailable
-	case res.StatusCode == http.StatusNotFound:
-		return Page{}, ErrCalendarNotFound
-	case res.StatusCode == http.StatusTooManyRequests,
-		res.StatusCode == http.StatusServiceUnavailable && retryAfter != "":
+	}
+	return Page{}, graphStatusError(res.StatusCode, res.Header, body)
+}
+
+// graphStatusError maps a non-success answer.
+func graphStatusError(status int, header http.Header, body []byte) error {
+	retryAfter := header.Get("Retry-After")
+	code := graphErrorCode(body)
+	switch {
+	case status == http.StatusUnauthorized:
+		return ErrTokenRejected
+	case code == "MailboxNotEnabledForRESTAPI":
+		return ErrCalendarUnavailable
+	case status == http.StatusNotFound:
+		return ErrCalendarNotFound
+	case status == http.StatusPreconditionFailed, code == "ErrorIrresolvableConflict":
+		return ErrVersionConflict
+	case status == http.StatusForbidden && (code == "ErrorAccessDenied" || code == "Authorization_RequestDenied"):
+		return ErrScopeRejected
+	case status == http.StatusTooManyRequests,
+		status == http.StatusServiceUnavailable && retryAfter != "":
 		// Graph throttles with 429, and sometimes 503 + Retry-After.
-		return Page{}, &RateLimitedError{RetryAfter: parseRetryAfter(retryAfter)}
-	case res.StatusCode >= 500:
-		return Page{}, fmt.Errorf("%w: status %d", ErrProviderUnavailable, res.StatusCode)
+		return &RateLimitedError{RetryAfter: parseRetryAfter(retryAfter)}
+	case status >= 500:
+		return fmt.Errorf("%w: status %d", ErrProviderUnavailable, status)
 	default:
-		return Page{}, fmt.Errorf("%w: status %d", ErrProviderBadResponse, res.StatusCode)
+		return fmt.Errorf("%w: status %d", ErrProviderBadResponse, status)
 	}
 }
 
@@ -176,6 +188,7 @@ func normalizeGraphEvent(item graphEvent) (Event, error) {
 		Title:    item.Subject, // empty stays empty: do not invent a title
 		Location: item.Location.DisplayName,
 		Provider: "microsoft",
+		Version:  item.ChangeKey,
 	}
 	if o := item.Organizer; o != nil && (o.EmailAddress.Address != "" || o.EmailAddress.Name != "") {
 		ev.Organizer = &Organizer{Email: o.EmailAddress.Address, Name: o.EmailAddress.Name}
