@@ -24,6 +24,7 @@ func setValidEnv(t *testing.T) {
 		"MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET", "MICROSOFT_REDIRECT_URL", "MICROSOFT_TENANT_ID", "MICROSOFT_EXPIRATION_DATE",
 		"REFRESH_AHEAD", "REFRESH_CONCURRENCY",
 		"WEBHOOK_BASE_URL", "NATS_URL",
+		"REDIS_URL", "RATE_LIMIT_PER_MINUTE", "RATE_LIMIT_BURST", "RATE_LIMIT_IP_PER_MINUTE", "RATE_LIMIT_IP_BURST",
 	} {
 		t.Setenv(k, "")
 	}
@@ -83,6 +84,27 @@ func TestLoadWebhookLoopback(t *testing.T) {
 	}
 }
 
+func TestLoadRateLimitDefaults(t *testing.T) {
+	setValidEnv(t)
+	cfg, err := load(fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RedisURL != "" || cfg.RateLimitPerMinute != 600 || cfg.RateLimitBurst != 100 ||
+		cfg.RateLimitIPPerMinute != 1200 || cfg.RateLimitIPBurst != 200 {
+		t.Fatalf("defaults: %+v", cfg)
+	}
+}
+
+func TestRedisURLErrorHidesPassword(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("REDIS_URL", "http://user:s3cret@localhost:6379")
+	_, err := load(fixedNow)
+	if err == nil || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestLoadInvalid(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -91,6 +113,13 @@ func TestLoadInvalid(t *testing.T) {
 		wantErr string
 	}{
 		{"missing database url", "DATABASE_URL", "", "DATABASE_URL is required"},
+		{"rate limit zero", "RATE_LIMIT_PER_MINUTE", "0", "RATE_LIMIT_PER_MINUTE"},
+		{"rate limit negative", "RATE_LIMIT_PER_MINUTE", "-5", "RATE_LIMIT_PER_MINUTE"},
+		{"rate limit burst zero", "RATE_LIMIT_BURST", "0", "RATE_LIMIT_BURST"},
+		{"ip rate limit zero", "RATE_LIMIT_IP_PER_MINUTE", "0", "RATE_LIMIT_IP_PER_MINUTE"},
+		{"ip burst not a number", "RATE_LIMIT_IP_BURST", "many", "RATE_LIMIT_IP_BURST"},
+		{"redis wrong scheme", "REDIS_URL", "http://localhost:6379", "REDIS_URL"},
+		{"redis without host", "REDIS_URL", "redis://", "REDIS_URL"},
 		{"google id without secret", "GOOGLE_CLIENT_SECRET", "", "GOOGLE_CLIENT_SECRET is required when GOOGLE_CLIENT_ID is set"},
 		{"google secret without id", "GOOGLE_CLIENT_ID", "", "GOOGLE_CLIENT_ID is required when GOOGLE_CLIENT_SECRET is set"},
 		{"missing redirect url", "GOOGLE_REDIRECT_URL", "", "GOOGLE_REDIRECT_URL: is required"},

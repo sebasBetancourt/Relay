@@ -70,6 +70,19 @@ type Config struct {
 	// NATSURL enables the JetStream sync consumer. Required when
 	// WebhookBaseURL is set. Empty leaves delta sync off.
 	NATSURL string
+
+	// RedisURL shares the rate limit across replicas. Empty keeps the limit
+	// local to each replica. Never log it: it may hold a password.
+	RedisURL string
+	// RateLimit applies per tenant to authenticated /v1 requests
+	// (RATE_LIMIT_PER_MINUTE, default 600; RATE_LIMIT_BURST, default 100).
+	RateLimitPerMinute int
+	RateLimitBurst     int
+	// RateLimitIP applies per client IP to public routes and to requests
+	// without a valid key (RATE_LIMIT_IP_PER_MINUTE, default 1200;
+	// RATE_LIMIT_IP_BURST, default 200).
+	RateLimitIPPerMinute int
+	RateLimitIPBurst     int
 }
 
 // Load reads the environment and fails fast: every missing or invalid
@@ -133,6 +146,27 @@ func load(now time.Time) (Config, error) {
 	cfg.NATSURL = os.Getenv("NATS_URL")
 	if cfg.WebhookBaseURL != "" && cfg.NATSURL == "" {
 		errs = append(errs, errors.New("NATS_URL is required when WEBHOOK_BASE_URL is set"))
+	}
+
+	cfg.RedisURL = strings.TrimSpace(os.Getenv("REDIS_URL"))
+	if err := validateRedisURL(cfg.RedisURL); err != nil {
+		errs = append(errs, fmt.Errorf("REDIS_URL: %w", err))
+	}
+	for _, v := range []struct {
+		key      string
+		fallback int
+		dst      *int
+	}{
+		{"RATE_LIMIT_PER_MINUTE", 600, &cfg.RateLimitPerMinute},
+		{"RATE_LIMIT_BURST", 100, &cfg.RateLimitBurst},
+		{"RATE_LIMIT_IP_PER_MINUTE", 1200, &cfg.RateLimitIPPerMinute},
+		{"RATE_LIMIT_IP_BURST", 200, &cfg.RateLimitIPBurst},
+	} {
+		n, err := positiveIntEnv(v.key, v.fallback)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		*v.dst = n
 	}
 
 	if len(errs) > 0 {
@@ -274,6 +308,18 @@ func validateWebhook(raw string) (string, error) {
 		return "", errors.New("must be https (providers reject a public http webhook)")
 	}
 	return raw, nil
+}
+
+// validateRedisURL never includes the value in its errors: it may hold a password.
+func validateRedisURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "redis" && u.Scheme != "rediss") {
+		return errors.New("must be a redis:// or rediss:// URL")
+	}
+	return nil
 }
 
 func validateRedirectURL(raw string) error {
