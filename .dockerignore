@@ -14,7 +14,6 @@ docs
 api
 scripts
 *.md
-migrations
 bin/
 dist/
 coverage.out
