@@ -39,6 +39,18 @@ func main() {
 	}
 	_ = godotenv.Load()
 
+	// An image has no shell, so a deploy migrates through this binary. It needs
+	// only the database: a release must not depend on the rest of the config.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		version, err := store.Migrate(os.Getenv("DATABASE_URL"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("schema at version", version)
+		return
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -157,13 +169,14 @@ func main() {
 	idempotency := store.NewIdempotency(pool)
 
 	deps := httpapi.Deps{
-		Log:      log,
-		DB:       pool,
-		Tenants:  store.NewTenants(pool),
-		Env:      cfg.Env,
-		Connect:  oauthSvc,
-		Callback: oauthSvc,
-		Calendar: calendarSvc,
+		Log:            log,
+		DB:             pool,
+		Tenants:        store.NewTenants(pool),
+		Env:            cfg.Env,
+		ClientIPHeader: cfg.ClientIPHeader,
+		Connect:        oauthSvc,
+		Callback:       oauthSvc,
+		Calendar:       calendarSvc,
 
 		CalendarWrite: calendarSvc,
 		Idempotency:   idempotency,
