@@ -314,6 +314,7 @@ Short-lived rows from connect step 1 (~10 min). Used only until callback.
 | Concurrent refresh across replicas | Two replicas redeem the same refresh token; with rotation one of them stores an older token | `oauth_tokens` row lock (`SELECT … FOR UPDATE`) around every refresh; a replica that waited re-reads the row and reuses the token the other one stored. `singleflight` collapses callers inside one replica. |
 | User revokes access in Google/MS | Calls fail with `invalid_grant` | Mark account `revoked`, delete tokens, return **409** (see Request flow §7) |
 | One tenant floods Relay | Other tenants degraded | Per-tenant budget in Redis, `429` with `Retry-After`; local limit if Redis fails ([ADR 0009](adr/0009-rate-limiting.md)) |
+| A client retries a write | Duplicate events | `Idempotency-Key` stored for 24 hours ([ADR 0010](adr/0010-event-writes.md)) |
 | Provider rate limits (429) | Client errors / degraded UX | Exponential backoff honoring `Retry-After`; cache and queues in v0.2 |
 | Google doesn't return refresh_token | Cannot refresh; reconnect required often | Request `access_type=offline` and `prompt=consent` |
 | CSRF / replay on callback | Attacker links their provider account to a victim tenant | One-time `state` with ~10 min TTL + PKCE |

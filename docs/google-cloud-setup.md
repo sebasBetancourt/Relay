@@ -26,6 +26,7 @@ Without this, token exchange works but every Calendar call fails with `403 acces
 | Publishing status | **Testing** | No Google review needed while developing. |
 | Test users | Your own Google account | In Testing mode only listed users can grant consent. |
 | Scopes | `openid` and `https://www.googleapis.com/auth/calendar.readonly` | `openid` gives an `id_token` with `sub` (stable account id). `calendar.readonly` is the only calendar permission v0.1 needs. No extra Google verification for `openid`. |
+| Scope to write events (optional) | `https://www.googleapis.com/auth/calendar.events` | Only asked for with `?features=calendar.write`. Add it to the consent screen. Google classes it as sensitive: leaving Testing mode needs app verification. |
 
 Testing mode limits: at most 100 test users, and refresh tokens expire after 7 days. Both go away after Google verification (see [Production](#production)).
 

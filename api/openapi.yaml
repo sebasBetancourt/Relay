@@ -121,8 +121,13 @@ paths:
         - default: `302` with `Location` set to the consent URL;
         - with `Accept: application/json`: `200` with the URL in the body, to
           hand to your user's browser.
+
+        Reading is always included. `features=calendar.write` also asks for
+        the scope that writes events. Connecting the same account again with
+        it upgrades the account in place.
       parameters:
         - $ref: "#/components/parameters/Provider"
+        - { name: features, in: query, description: Comma-separated optional capabilities., schema: { type: string, enum: [calendar.write] } }
       responses:
         "200":
           description: Consent URL (when `Accept` includes `application/json`).
@@ -463,6 +468,121 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "500": { $ref: "#/components/responses/InternalError" }
         "502": { $ref: "#/components/responses/ProviderError" }
+    post:
+      tags: [Events]
+      operationId: createEvent
+      summary: Create an event
+      description: |
+        The same body for both providers. Relay translates the time zone and
+        the recurrence, and refuses what it cannot translate exactly. Needs an
+        account connected with `features=calendar.write`.
+
+        Attendees receive real invitations from the provider.
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventInput" }
+      responses:
+        "201":
+          description: Created. A replay of an `Idempotency-Key` returns the same body with `Idempotent-Replayed`.
+          headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
+            Idempotent-Replayed: { $ref: "#/components/headers/IdempotentReplayed" }
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+            Cache-Control: { $ref: "#/components/headers/PrivateNoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "400": { $ref: "#/components/responses/InvalidEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InsufficientScope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/WriteConflict" }
+        "413": { $ref: "#/components/responses/BodyTooLarge" }
+        "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "502": { $ref: "#/components/responses/ProviderError" }
+
+  /v1/calendars/{id}/events/{event_id}:
+    patch:
+      tags: [Events]
+      operationId: updateEvent
+      summary: Update an event or a whole series
+      description: |
+        Only the fields sent change. `start` and `end` travel together. A
+        single occurrence cannot be edited; use the series id returned on create.
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - $ref: "#/components/parameters/EventID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - { name: If-Match, in: header, description: The event's `version`. Refuses the edit if the event changed since., schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventPatch" }
+      responses:
+        "200":
+          description: The updated event.
+          headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
+            Idempotent-Replayed: { $ref: "#/components/headers/IdempotentReplayed" }
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+            Cache-Control: { $ref: "#/components/headers/PrivateNoStore" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "400": { $ref: "#/components/responses/InvalidEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InsufficientScope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/WriteConflict" }
+        "412":
+          description: "`version_conflict`: the event changed since this `version` was read."
+          headers:
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: version_conflict }
+        "413": { $ref: "#/components/responses/BodyTooLarge" }
+        "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "502": { $ref: "#/components/responses/ProviderError" }
+    delete:
+      tags: [Events]
+      operationId: deleteEvent
+      summary: Delete an event or a whole series
+      description: Attendees are notified by the provider. A single occurrence cannot be deleted.
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - $ref: "#/components/parameters/EventID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Deleted.
+          headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
+            Idempotent-Replayed: { $ref: "#/components/headers/IdempotentReplayed" }
+            X-Request-ID: { $ref: "#/components/headers/RequestID" }
+        "400": { $ref: "#/components/responses/InvalidEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/InsufficientScope" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/WriteConflict" }
+        "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "502": { $ref: "#/components/responses/ProviderError" }
 
 components:
   securitySchemes:
@@ -478,6 +598,17 @@ components:
       in: path
       required: true
       schema: { $ref: "#/components/schemas/Provider" }
+    EventID:
+      name: event_id
+      in: path
+      required: true
+      description: The event id. Use the series id returned on create for a recurring event.
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Retrying with the same key and body returns the stored answer for 24 hours instead of writing again.
+      schema: { type: string, maxLength: 255 }
     AccountID:
       name: id
       in: path
@@ -486,6 +617,9 @@ components:
       schema: { type: string, format: uuid }
 
   headers:
+    IdempotentReplayed:
+      description: Present and `true` when this is the stored answer to an earlier request.
+      schema: { type: string, const: "true" }
     RequestID:
       description: Request id, echoed from the request's `X-Request-ID` or generated. Quote it in bug reports.
       schema: { type: string }
@@ -504,6 +638,52 @@ components:
       schema: { type: string, const: "private, no-store" }
 
   responses:
+    InvalidEvent:
+      description: |
+        Nothing was sent to the provider.
+
+        - `invalid_event` or `invalid_body`: the body is wrong.
+        - `unsupported_recurrence`: the providers cannot represent it identically, or the event is a single occurrence.
+        - `unsupported_timezone`: the IANA zone has no Windows equivalent in CLDR.
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/EventError" }
+          example: { error: unsupported_recurrence, detail: "until and count cannot be combined" }
+    InsufficientScope:
+      description: The account was connected read-only. Send the user through `reconnect_url`.
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/InsufficientScopeError" }
+    WriteConflict:
+      description: |
+        - `idempotency_in_progress`: the first request with this key is still running; retry after `Retry-After`.
+        - `account_revoked`, `account_disconnected` or `calendar_unavailable`: reconnect, as for reads.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    IdempotencyKeyReused:
+      description: This `Idempotency-Key` was used with a different route or body.
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: idempotency_key_reused }
+    BodyTooLarge:
+      description: The body exceeds 64 KiB.
+      headers:
+        X-Request-ID: { $ref: "#/components/headers/RequestID" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: body_too_large }
     Unauthorized:
       description: Missing, malformed, unknown, revoked or wrong-environment API key. Always the same body.
       headers:
@@ -582,6 +762,15 @@ components:
         error: { type: string, const: invalid_query }
         detail: { type: string }
 
+    EventError:
+      type: object
+      required: [error, detail]
+      properties:
+        error:
+          type: string
+          enum: [invalid_body, invalid_event, unsupported_recurrence, unsupported_timezone]
+        detail: { type: string }
+
     Tenant:
       type: object
       required: [id, name, key_prefix]
@@ -643,6 +832,81 @@ components:
         location: { type: string }
         organizer: { $ref: "#/components/schemas/Organizer" }
         provider: { $ref: "#/components/schemas/Provider" }
+        version:
+          type: string
+          description: Changes with every edit. Send it as `If-Match` on PATCH.
+
+    Recurrence:
+      type: object
+      description: The subset of RRULE both providers represent identically.
+      required: [freq]
+      properties:
+        freq: { type: string, enum: [DAILY, WEEKLY, MONTHLY, YEARLY] }
+        interval: { type: integer, minimum: 1, default: 1 }
+        by_day:
+          type: array
+          description: WEEKLY only. Must include the event's start day; defaults to it.
+          items: { type: string, enum: [MO, TU, WE, TH, FR, SA, SU] }
+        until:
+          type: string
+          format: date
+          description: Last date, inclusive, in the event's zone. Not with `count`.
+        count: { type: integer, minimum: 1 }
+
+    EventInput:
+      type: object
+      required: [start, end]
+      properties:
+        title: { type: string }
+        location: { type: string }
+        description: { type: string, description: Plain text. }
+        start:
+          type: string
+          description: RFC 3339 with an offset, or `YYYY-MM-DD` with `all_day`.
+          examples: ["2026-11-02T09:00:00-05:00", "2026-11-02"]
+        end:
+          type: string
+          description: Same format as `start`; exclusive for all-day events.
+        timezone:
+          type: string
+          description: IANA zone. Required for timed events.
+          examples: [America/Bogota]
+        all_day: { type: boolean, default: false }
+        attendees:
+          type: array
+          description: Bare email addresses. They receive real invitations.
+          items: { type: string, format: email }
+        recurrence: { $ref: "#/components/schemas/Recurrence" }
+
+    EventPatch:
+      type: object
+      description: Same fields as `EventInput`, all optional. `start` and `end` go together, and `recurrence` needs both.
+      properties:
+        title: { type: string }
+        location: { type: string }
+        description: { type: string }
+        start: { type: string }
+        end: { type: string }
+        timezone: { type: string }
+        all_day: { type: boolean }
+        attendees:
+          type: array
+          description: Replaces the whole list.
+          items: { type: string, format: email }
+        recurrence: { $ref: "#/components/schemas/Recurrence" }
+
+    InsufficientScopeError:
+      type: object
+      required: [error, required_scopes, reconnect_url]
+      properties:
+        error: { type: string, const: insufficient_scope }
+        required_scopes:
+          type: array
+          items: { type: string }
+        reconnect_url:
+          type: string
+          description: Call it with your API key, as `/v1/connect`, and send the user to the consent screen.
+          examples: ["/v1/connect/google?features=calendar.write"]
 
     EventsPage:
       type: object

@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/sebasBetancourt/Relay)](https://github.com/sebasBetancourt/Relay/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**One API for Google Calendar and Outlook.** Your users connect their Google or Microsoft account once; Relay handles OAuth, keeps their tokens encrypted and fresh, and returns their events in a single shape, whatever the provider.
+**One API for Google Calendar and Outlook.** Your users connect their Google or Microsoft account once; Relay handles OAuth, keeps their tokens encrypted and fresh, and reads and writes their events in a single shape, whatever the provider.
 
 Integrating Google and Microsoft calendars separately means two OAuth flows, two token lifecycles (Microsoft rotates refresh tokens on every refresh), two event formats and two sets of edge cases. Relay is that work, done once and tested.
 
@@ -30,6 +30,7 @@ curl -H "Authorization: Bearer $RELAY_KEY" \
 | --- | :---: | :---: |
 | Connect with OAuth 2.0 + PKCE | ✅ | ✅ (work, school and personal accounts) |
 | Read events from the primary calendar (recurrences expanded) | ✅ | ✅ (Windows time zones → IANA) |
+| Create, edit and delete events (recurrences, time zones, idempotent) | ✅ `RRULE` | ✅ `patternedRecurrence` |
 | Silent token refresh | ✅ | ✅ (rotating refresh tokens, safe across replicas) |
 | Detect revoked access (`409`, reconnect) | ✅ | ✅ (including MFA / Conditional Access) |
 | Disconnect an account | ✅ (token revoked at Google) | ✅ |
@@ -122,11 +123,13 @@ All `/v1` routes except the OAuth callback and the webhook endpoints take `Autho
 
 | Method | Path | What it does |
 | --- | --- | --- |
-| `GET` | `/v1/connect/{provider}` | Start connecting a `google` or `microsoft` account (302, or 200 JSON) |
+| `GET` | `/v1/connect/{provider}` | Start connecting a `google` or `microsoft` account (302, or 200 JSON). `?features=calendar.write` adds write access |
 | `GET` | `/v1/oauth/{provider}/callback` | OAuth callback (public; called by the browser) |
 | `GET` | `/v1/accounts` | List the tenant's connected accounts |
 | `DELETE` | `/v1/accounts/{id}` | Disconnect an account |
 | `GET` | `/v1/calendars/{id}/events` | List events, normalized across providers |
+| `POST` | `/v1/calendars/{id}/events` | Create an event |
+| `PATCH`, `DELETE` | `/v1/calendars/{id}/events/{event_id}` | Update or delete an event or series |
 | `GET` | `/v1/me` | The tenant behind the API key |
 | `POST` | `/v1/webhooks/google` | Google push notification (public; no API key) |
 | `POST` | `/v1/webhooks/microsoft` | Graph notification, or the `validationToken` handshake |

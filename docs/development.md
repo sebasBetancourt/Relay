@@ -68,7 +68,7 @@ internal/
   httpapi/                  router and handlers: me, connect, callback, calendars, accounts
     middleware/             request id, access log, panic recovery, API key auth
   oauth/                    providers (Google, Microsoft), connect flow, token lifecycle (refresh, rotation, revoke)
-  calendar/                 events service + provider sources (Google, Microsoft Graph)
+  calendar/                 events service, provider sources and writers (Google, Microsoft Graph), recurrence and time zone translation
   store/                    Postgres access, SQL only
   apikey/                   API key generation, checksum and hashing
   vault/                    AES-256-GCM encryption with AAD for tokens at rest

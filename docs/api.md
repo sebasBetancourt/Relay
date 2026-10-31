@@ -146,6 +146,63 @@ Expired access tokens are refreshed silently: 60s skew, singleflight per account
 | Unexpected provider response | 502 | `provider_error` |
 | DB / decrypt failure | 500 | `internal error` |
 
+## Write events
+
+Writing needs more than the read-only connect. Ask for it with `features`, or connect the same account again with it. The account keeps its id:
+
+```bash
+curl -s -H "Authorization: Bearer $(cat acme.key)" -H "Accept: application/json" \
+  "localhost:8080/v1/connect/google?features=calendar.write" | jq -r .authorization_url
+```
+
+Without that consent, a write answers **403** with the way out:
+
+```json
+{"error":"insufficient_scope","required_scopes":["https://www.googleapis.com/auth/calendar.events"],"reconnect_url":"/v1/connect/google?features=calendar.write"}
+```
+
+The same body works for both providers:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $(cat acme.key)" -H "Idempotency-Key: $(uuidgen)" \
+  "localhost:8080/v1/calendars/$ACCOUNT_ID/events" -d '{
+    "title": "Standup",
+    "start": "2026-11-02T09:00:00-05:00",
+    "end": "2026-11-02T09:30:00-05:00",
+    "timezone": "America/Bogota",
+    "attendees": ["ana@example.com"],
+    "recurrence": {"freq": "WEEKLY", "by_day": ["MO", "WE"], "count": 10}
+  }' | jq
+```
+
+| Method | Path | Answer |
+| --- | --- | --- |
+| `POST` | `/v1/calendars/{id}/events` | **201** with the event |
+| `PATCH` | `/v1/calendars/{id}/events/{event_id}` | **200** with the event; only the fields sent change |
+| `DELETE` | `/v1/calendars/{id}/events/{event_id}` | **204** |
+
+- **Timed events** take `start` and `end` in RFC 3339 with an offset, plus an IANA `timezone`. They keep the same local time on both providers, also across DST.
+- **All-day events** take `"all_day": true` and `YYYY-MM-DD`, with `end` exclusive.
+- **Recurrence** covers `DAILY`, `WEEKLY` (with `by_day`), `MONTHLY` by day of the month and `YEARLY`, ending with `count`, with `until` (inclusive, in the event's zone) or never. Weeks start on Monday.
+- **Attendees get real emails.** Graph always sends invitations and Google is told to as well (`sendUpdates=all`), so both behave the same. Use your own accounts in tests.
+
+Anything the providers would not store identically is refused with `400`, and nothing is created:
+
+| Refused | Why |
+| --- | --- |
+| Monthly on the 29th, 30th or 31st; yearly on February 29 | Google skips the short month, Outlook moves to the last day |
+| `by_day` that does not include the start day | The providers disagree on the first occurrence |
+| `by_day` on anything but `WEEKLY`, or `until` with `count` | Outside the supported subset |
+| Editing or deleting a single occurrence | Only whole series, using the id returned on create |
+| Moving a series without sending its `recurrence` | The new start could fall outside the pattern |
+| A zone CLDR does not list (`unsupported_timezone`) | Graph needs a Windows name, and Relay never guesses one. Current names such as `Asia/Kolkata` are mapped; old links such as `Australia/Tasmania` are not |
+
+`GET /events` expands series, so its ids belong to single occurrences. Keep the id returned on create to change a series.
+
+**Safe retries.** With an `Idempotency-Key`, repeating a request returns the stored answer for 24 hours, marked `Idempotent-Replayed: true`, and writes nothing. The same key with another route or body is **422**, and while the first request runs it is **409** with `Retry-After`. Only successes are stored, so a failed request can be retried with the same key. If a provider times out, the event may exist even though Relay answered `502`, and a retry can create it twice.
+
+**Concurrent edits.** Every event carries a `version`. Send it as `If-Match` on `PATCH`, and if someone changed the event since, the answer is **412** `version_conflict` and nothing changes.
+
 ## Rate limits
 
 Every authenticated `/v1` request spends from the tenant's budget, shared by all replicas. Past it, Relay answers **429**:

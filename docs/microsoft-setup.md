@@ -54,12 +54,13 @@ Both secrets work at the same time, so there is no downtime.
 
 **API permissions → Add a permission → Microsoft Graph → Delegated permissions**:
 
-| Permission | Why |
-| --- | --- |
-| `Calendars.Read` | Read the user's events. The only calendar permission v0.1 needs. |
-| `User.Read` | `GET /me`: the account's stable `id` and its email. Usually present by default. |
-| `offline_access` | Microsoft returns a refresh token only with this scope. |
-| `openid`, `email` | Standard sign-in scopes. |
+| Permission            | Why                                                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `Calendars.Read`      | Read the user's events.                                                                                             |
+| `Calendars.ReadWrite` | Only to write events. Asked for with `?features=calendar.write`, and added here so the app's consent page lists it. |
+| `User.Read`           | `GET /me`: the account's stable `id` and its email. Usually present by default.                                     |
+| `offline_access`      | Microsoft returns a refresh token only with this scope.                                                             |
+| `openid`, `email`     | Standard sign-in scopes.                                                                                            |
 
 None of these require admin consent for personal accounts. Some organizations block user consent; in that case an admin must use **Grant admin consent** for their directory.
 
