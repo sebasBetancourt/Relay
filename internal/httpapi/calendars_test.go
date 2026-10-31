@@ -31,7 +31,7 @@ func (f *fakeCalendar) ListEvents(_ context.Context, _, _ string, q calendar.Que
 
 func calendarsRouter(t *testing.T, cal CalendarReader, key apikey.Key) http.Handler {
 	t.Helper()
-	return NewRouter(Deps{
+	return contractRouter(t, Deps{
 		Log:      discardLogger(),
 		Tenants:  &fakeLookup{tenants: map[string]store.Tenant{key.Hash: {ID: "tenant-1", Name: "T", KeyPrefix: key.KeyPrefix}}},
 		Env:      apikey.EnvTest,

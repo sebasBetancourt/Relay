@@ -79,7 +79,7 @@ func (m *memoryKeys) Release(_ context.Context, _, key string) error {
 
 func writesRouter(t *testing.T, cal CalendarWriter, keys IdempotencyStore, key apikey.Key) http.Handler {
 	t.Helper()
-	return NewRouter(Deps{
+	return contractRouter(t, Deps{
 		Log:           discardLogger(),
 		Tenants:       &fakeLookup{tenants: map[string]store.Tenant{key.Hash: {ID: "tenant-1", Name: "T", KeyPrefix: key.KeyPrefix}}},
 		Env:           apikey.EnvTest,
@@ -91,6 +91,9 @@ func writesRouter(t *testing.T, cal CalendarWriter, keys IdempotencyStore, key a
 func send(h http.Handler, method, path, body string, key apikey.Key, hdr map[string]string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+key.Plaintext)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
@@ -144,7 +147,6 @@ func TestWriteErrors(t *testing.T) {
 		code   string
 	}{
 		{"recurrence", &calendar.ValidationError{Code: calendar.CodeUnsupportedRecurrence, Detail: "no"}, http.StatusBadRequest, "unsupported_recurrence"},
-		{"stale version", calendar.ErrVersionConflict, http.StatusPreconditionFailed, "version_conflict"},
 		{"other tenant", store.ErrNotFound, http.StatusNotFound, "not_found"},
 		{"revoked", oauth.ErrAccountRevoked, http.StatusConflict, "account_revoked"},
 		{"provider down", calendar.ErrProviderUnavailable, http.StatusBadGateway, "provider_unavailable"},
@@ -175,6 +177,15 @@ func TestInsufficientScopeTellsHowToFixIt(t *testing.T) {
 	if body.Error != "insufficient_scope" || body.RequiredScopes[0] != oauth.GoogleCalendarEvents ||
 		body.ReconnectURL != "/v1/connect/google?features=calendar.write" {
 		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestStaleVersionIsRefused(t *testing.T) {
+	key := apikey.Generate(apikey.EnvTest)
+	h := writesRouter(t, &fakeWrites{err: calendar.ErrVersionConflict}, nil, key)
+	rec := send(h, http.MethodPatch, "/v1/calendars/a1/events/e1", `{"title":"x"}`, key, map[string]string{"If-Match": "v1"})
+	if rec.Code != http.StatusPreconditionFailed || !strings.Contains(rec.Body.String(), "version_conflict") {
+		t.Fatalf("code = %d body %s", rec.Code, rec.Body.String())
 	}
 }
 

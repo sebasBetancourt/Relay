@@ -36,7 +36,7 @@ func TestV1MeWithRealDB(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM tenants WHERE id = $1", tenant.ID)
 	})
 
-	router := NewRouter(Deps{Log: discardLogger(), DB: pool, Tenants: tenants, Env: apikey.EnvTest})
+	router := contractRouter(t, Deps{Log: discardLogger(), DB: pool, Tenants: tenants, Env: apikey.EnvTest})
 	call := func() int {
 		req := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
 		req.Header.Set("Authorization", "Bearer "+key.Plaintext)

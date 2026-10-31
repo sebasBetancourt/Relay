@@ -34,7 +34,7 @@ func (f *fakeCallback) Finish(_ context.Context, provider oauth.Provider, state,
 
 func TestCallbackPublicAndMeStillProtected(t *testing.T) {
 	cb := &fakeCallback{res: oauth.Result{AccountID: "a1", Provider: oauth.ProviderGoogle}}
-	router := NewRouter(Deps{
+	router := contractRouter(t, Deps{
 		Log:      discardLogger(),
 		Tenants:  &fakeLookup{},
 		Env:      apikey.EnvTest,
@@ -78,7 +78,7 @@ func TestCallbackStatusTable(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cb := &fakeCallback{err: tt.finishErr, res: oauth.Result{AccountID: "a1", Provider: oauth.ProviderGoogle}}
-			router := NewRouter(Deps{Log: discardLogger(), Callback: cb, Env: apikey.EnvTest, Tenants: &fakeLookup{}})
+			router := contractRouter(t, Deps{Log: discardLogger(), Callback: cb, Env: apikey.EnvTest, Tenants: &fakeLookup{}})
 
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/oauth/google/callback?"+tt.query, nil))
@@ -102,7 +102,7 @@ func TestCallbackStatusTable(t *testing.T) {
 
 func TestCallbackSuccess(t *testing.T) {
 	cb := &fakeCallback{res: oauth.Result{AccountID: "acct-9", Provider: oauth.ProviderGoogle}}
-	router := NewRouter(Deps{Log: discardLogger(), Callback: cb, Env: apikey.EnvTest, Tenants: &fakeLookup{}})
+	router := contractRouter(t, Deps{Log: discardLogger(), Callback: cb, Env: apikey.EnvTest, Tenants: &fakeLookup{}})
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/oauth/google/callback?state=st&code=cd", nil))
@@ -129,7 +129,7 @@ func TestCallbackSuccess(t *testing.T) {
 
 func TestCallbackSuccessIncludesEmail(t *testing.T) {
 	cb := &fakeCallback{res: oauth.Result{AccountID: "acct-ms", Provider: oauth.ProviderMicrosoft, Email: "ana@outlook.com"}}
-	router := NewRouter(Deps{Log: discardLogger(), Callback: cb, Env: apikey.EnvTest, Tenants: &fakeLookup{}})
+	router := contractRouter(t, Deps{Log: discardLogger(), Callback: cb, Env: apikey.EnvTest, Tenants: &fakeLookup{}})
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/oauth/microsoft/callback?state=st&code=cd", nil))

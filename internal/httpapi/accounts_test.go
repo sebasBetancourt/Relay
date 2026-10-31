@@ -41,7 +41,7 @@ func (f *fakeDisconnector) Disconnect(_ context.Context, tenantID, accountID str
 
 func accountsRouter(t *testing.T, key apikey.Key, l AccountLister, d Disconnector) http.Handler {
 	t.Helper()
-	return NewRouter(Deps{
+	return contractRouter(t, Deps{
 		Log:        discardLogger(),
 		Tenants:    &fakeLookup{tenants: map[string]store.Tenant{key.Hash: {ID: "tenant-1", Name: "T", KeyPrefix: key.KeyPrefix}}},
 		Env:        apikey.EnvTest,

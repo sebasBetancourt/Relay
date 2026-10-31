@@ -57,7 +57,7 @@ func newConnectFixture(t *testing.T, storeErr error) connectFixture {
 		},
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
-	router := NewRouter(Deps{
+	router := contractRouter(t, Deps{
 		Log:      discardLogger(),
 		Tenants:  &fakeLookup{tenants: map[string]store.Tenant{key.Hash: tenant}},
 		Env:      apikey.EnvTest,
@@ -210,7 +210,7 @@ func TestConnectMicrosoftRedirects(t *testing.T) {
 		},
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
-	router := NewRouter(Deps{
+	router := contractRouter(t, Deps{
 		Log:     discardLogger(),
 		Tenants: &fakeLookup{tenants: map[string]store.Tenant{key.Hash: tenant}},
 		Env:     apikey.EnvTest,

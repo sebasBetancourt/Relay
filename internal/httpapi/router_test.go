@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sebasBetancourt/relay/internal/apikey"
@@ -31,9 +32,14 @@ func (s *webhookStub) MicrosoftLifecycle(w http.ResponseWriter, _ *http.Request)
 
 func TestWebhooksArePublic(t *testing.T) {
 	stub := &webhookStub{}
-	router := NewRouter(Deps{Log: discardLogger(), Env: apikey.EnvTest, Webhooks: stub})
+	router := contractRouter(t, Deps{Log: discardLogger(), Env: apikey.EnvTest, Webhooks: stub})
 	for _, path := range []string{"/v1/webhooks/google", "/v1/webhooks/microsoft", "/v1/webhooks/microsoft/lifecycle"} {
-		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"value":[]}`))
+		// What each provider really sends; none of it is an API key.
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Goog-Channel-ID", "channel")
+		req.Header.Set("X-Goog-Channel-Token", "secret")
+		req.Header.Set("X-Goog-Resource-State", "exists")
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 		if rec.Code != http.StatusAccepted {
@@ -47,7 +53,7 @@ func TestWebhooksArePublic(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(Deps{Log: log, Env: apikey.EnvTest}) // healthz no usa la DB ni el store
+	router := contractRouter(t, Deps{Log: log, Env: apikey.EnvTest}) // healthz no usa la DB ni el store
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -68,7 +74,7 @@ func TestRouterV1(t *testing.T) {
 	key := apikey.Generate(apikey.EnvTest)
 	acme := store.Tenant{ID: "t-1", Name: "Acme", KeyPrefix: key.KeyPrefix}
 	lookup := &fakeLookup{tenants: map[string]store.Tenant{key.Hash: acme}}
-	router := NewRouter(Deps{Log: discardLogger(), Tenants: lookup, Env: apikey.EnvTest})
+	router := contractRouter(t, Deps{Log: discardLogger(), Tenants: lookup, Env: apikey.EnvTest})
 
 	do := func(path, auth string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, path, nil)

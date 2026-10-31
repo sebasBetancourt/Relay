@@ -49,7 +49,7 @@ func TestConnectWithRealDB(t *testing.T) {
 		},
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
-	router := NewRouter(Deps{
+	router := contractRouter(t, Deps{
 		Log:      discardLogger(),
 		DB:       pool,
 		Tenants:  tenants,

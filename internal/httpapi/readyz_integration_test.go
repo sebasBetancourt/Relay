@@ -26,12 +26,31 @@ func TestReadyzWithRealDB(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := NewRouter(Deps{Log: log, DB: pool, Tenants: store.NewTenants(pool), Env: apikey.EnvTest})
+	router := contractRouter(t, Deps{Log: log, DB: pool, Tenants: store.NewTenants(pool), Env: apikey.EnvTest})
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReadyzWithoutTheDB(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set, skipping integration test")
+	}
+	pool, err := store.NewPool(context.Background(), url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	pool.Close()
+
+	router := contractRouter(t, Deps{Log: discardLogger(), DB: pool, Tenants: store.NewTenants(pool), Env: apikey.EnvTest})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
 	}
 }

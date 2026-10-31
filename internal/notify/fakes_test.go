@@ -87,6 +87,7 @@ func (m memTok) AccessToken(context.Context, string, string) (oauth.AccessToken,
 type memPub struct {
 	mu   sync.Mutex
 	msgs []pubMsg
+	err  error
 }
 
 type pubMsg struct {
@@ -99,7 +100,7 @@ func (m *memPub) Publish(_ context.Context, subject, msgID string, body []byte) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.msgs = append(m.msgs, pubMsg{subject: subject, id: msgID, body: append([]byte(nil), body...)})
-	return nil
+	return m.err
 }
 
 type panicProvider struct{}
