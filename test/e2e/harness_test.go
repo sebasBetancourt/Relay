@@ -23,6 +23,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/apikey"
 	"github.com/sebasBetancourt/relay/internal/calendar"
 	"github.com/sebasBetancourt/relay/internal/httpapi"
+	"github.com/sebasBetancourt/relay/internal/httpapi/middleware"
 	"github.com/sebasBetancourt/relay/internal/notify"
 	"github.com/sebasBetancourt/relay/internal/oauth"
 	"github.com/sebasBetancourt/relay/internal/queue/natsq"
@@ -73,6 +74,7 @@ type flow struct {
 	nats        *natsq.Client
 	webhookBase string
 	syncOn      bool
+	rateLimit   *middleware.RateLimiter
 	syncSvc     *sync.Service
 }
 
@@ -210,7 +212,7 @@ func (f *flow) buildRouter(pool *pgxpool.Pool) http.Handler {
 	return httpapi.NewRouter(httpapi.Deps{
 		Log: discardLogger(), DB: pool, Tenants: store.NewTenants(pool), Env: apikey.EnvTest,
 		Connect: oauthSvc, Callback: oauthSvc, Calendar: calSvc,
-		Accounts: accounts, Disconnect: oauthSvc, Webhooks: hooks,
+		Accounts: accounts, Disconnect: oauthSvc, Webhooks: hooks, RateLimit: f.rateLimit,
 	})
 }
 
