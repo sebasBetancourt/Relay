@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -124,37 +125,23 @@ func handleWrite(log *slog.Logger, keys IdempotencyStore, fn func(*http.Request,
 			return
 		case errors.Is(err, store.ErrIdempotencyInProgress):
 			w.Header().Set("Retry-After", "1")
-			writeJSON(w, http.StatusConflict, errorBody{Error: "idempotency_in_progress"})
+			writeJSON(w, http.StatusConflict, errorBody{Error: "idempotency_key_in_progress"})
 			return
 		case err != nil:
-			log.Error("idempotency begin failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
 			writeJSON(w, http.StatusInternalServerError, errorBody{Error: "internal error"})
 			return
-		case stored != nil:
+		}
+		if stored != nil {
 			w.Header().Set("Idempotent-Replayed", "true")
 			writeStored(w, *stored)
 			return
 		}
 
 		out := fn(r, t.ID, body)
-		// The client may have gone; the record must still be written.
-		ctx := context.WithoutCancel(r.Context())
-		if out.status >= 300 {
-			if err := keys.Release(ctx, t.ID, key); err != nil {
-				log.Error("idempotency release failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
-			}
-			writeOutcomeResponse(w, out)
-			return
-		}
-		res := store.StoredResponse{Status: out.status}
-		if out.body != nil {
-			if res.Body, err = json.Marshal(out.body); err != nil {
-				log.Error("idempotency encode failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
-			}
-		}
-		if err := keys.Complete(ctx, t.ID, key, res); err != nil {
-			// The write happened: answer it. A retry after a minute may repeat it.
-			log.Error("idempotency complete failed", "err", err, "request_id", middleware.RequestIDFromContext(r.Context()))
+		if out.status < 500 {
+			_ = keys.Complete(r.Context(), t.ID, key, store.StoredResponse{Status: out.status, Body: mustJSON(out.body)})
+		} else {
+			_ = keys.Release(r.Context(), t.ID, key)
 		}
 		writeOutcomeResponse(w, out)
 	}
@@ -171,33 +158,19 @@ func writeOutcomeResponse(w http.ResponseWriter, out writeOutcome) {
 	writeJSON(w, out.status, out.body)
 }
 
-func writeStored(w http.ResponseWriter, res store.StoredResponse) {
-	if res.Body == nil {
-		w.WriteHeader(res.Status)
-		return
-	}
-	writeJSON(w, res.Status, json.RawMessage(res.Body))
+func writeStored(w http.ResponseWriter, stored store.StoredResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(stored.Status)
+	_, _ = w.Write(stored.Body)
 }
 
-// writeFailure maps an error from the calendar service.
-func writeFailure(log *slog.Logger, r *http.Request, err error) writeOutcome {
-	var (
-		invalid *calendar.ValidationError
-		scope   *calendar.InsufficientScopeError
-	)
-	switch {
-	case errors.As(err, &invalid):
-		return writeOutcome{status: http.StatusBadRequest, body: queryErrorBody{Error: invalid.Code, Detail: invalid.Detail}}
-	case errors.As(err, &scope):
-		return writeOutcome{status: http.StatusForbidden, body: insufficientScopeBody{
-			Error:          "insufficient_scope",
-			RequiredScopes: scope.Required,
-			ReconnectURL:   "/v1/connect/" + scope.Provider + "?features=" + string(oauth.FeatureCalendarWrite),
-		}}
-	case errors.Is(err, calendar.ErrVersionConflict):
-		return writeOutcome{status: http.StatusPreconditionFailed, body: errorBody{Error: "version_conflict"}}
-	}
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}
 
+// writeFailure maps a calendar error to a status and code.
+func writeFailure(log *slog.Logger, r *http.Request, err error) writeOutcome {
 	status, code, retryAfter := mapCalendarError(err)
 	if status >= 500 {
 		log.Error("write event failed",
@@ -213,20 +186,78 @@ func writeFailure(log *slog.Logger, r *http.Request, err error) writeOutcome {
 // event must not replay on a delete.
 func requestHash(r *http.Request, body []byte) string {
 	h := sha256.New()
-	h.Write([]byte(r.Method + " " + r.URL.Path + "\n"))
+	h.Write([]byte(r.Method + " " + r.URL.Path + "
+"))
 	h.Write(body)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
 // decodeStrict refuses unknown fields: a typo like "atendees" must not create
-// an event without its guests.
+// an event without its guests. Errors are rewritten to friendlier public
+// messages that do not expose Go's decoder wording.
 func decodeStrict(body []byte, dst any) error {
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		return errors.New("body must be a JSON event: " + err.Error())
+		return errors.New(friendlyJSONError(err))
 	}
 	return nil
+}
+
+// friendlyJSONError turns common encoding/json errors into clear API messages.
+// Unknown cases fall back to a generic message.
+func friendlyJSONError(err error) string {
+	msg := err.Error()
+	// unknown field "foo"
+	if idx := strings.Index(msg, "unknown field "); idx >= 0 {
+		rest := msg[idx+len("unknown field "):]
+		if strings.HasPrefix(rest, """) {
+			end := strings.Index(rest[1:], """)
+			if end >= 0 {
+				field := rest[1 : 1+end]
+				return fmt.Sprintf("unknown field %q", field)
+			}
+		}
+		return "unknown field"
+	}
+	// cannot unmarshal X into Go value of type Y
+	// or cannot unmarshal X into Go struct field ...
+	if strings.Contains(msg, "cannot unmarshal") {
+		// extract field if present
+		if idx := strings.Index(msg, " into Go struct field "); idx >= 0 {
+			fieldPart := msg[idx+len(" into Go struct field "):]
+			// typically "package.Type.fieldName of type ..."
+			if dot := strings.LastIndex(fieldPart, "."); dot >= 0 {
+				field := fieldPart[dot+1:]
+				// trim until space or end
+				for i, c := range field {
+					if c == ' ' || c == '	' || c == ':' {
+						field = field[:i]
+						break
+					}
+				}
+				// determine expected type from context if possible, else generic
+				if strings.Contains(msg, "into Go value of type string") || strings.Contains(msg, " of type string") {
+					return fmt.Sprintf("%s must be a string", field)
+				}
+				if strings.Contains(msg, "of type bool") {
+					return fmt.Sprintf("%s must be a boolean", field)
+				}
+				return fmt.Sprintf("%s has an invalid type", field)
+			}
+		}
+		// top-level type error
+		if strings.Contains(msg, "into Go value of type") {
+			return "body has an invalid type"
+		}
+		return "invalid type for a field"
+	}
+	// syntax / structural errors
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "invalid character") || strings.Contains(lower, "unexpected end of json") || strings.Contains(lower, "eof") || strings.Contains(lower, "syntax error") {
+		return "body must be valid JSON"
+	}
+	return "body must be a JSON event"
 }
 
 // parseIfMatch accepts the version as returned, or the quoted and weak forms an
