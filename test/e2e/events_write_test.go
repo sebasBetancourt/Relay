@@ -28,6 +28,9 @@ func (f *flow) send(method, path, body string, hdr map[string]string) *httptest.
 
 func sendOn(router http.Handler, auth map[string]string, method, path, body string, hdr map[string]string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range auth {
 		req.Header.Set(k, v)
 	}
@@ -78,7 +81,7 @@ func created(t *testing.T, rec *httptest.ResponseRecorder) calendar.Event {
 
 func (f *flow) findEvent(accountID, id string) (calendar.Event, bool) {
 	f.t.Helper()
-	rec := f.events(accountID, "?"+window)
+	rec := f.events(accountID, window)
 	if rec.Code != http.StatusOK {
 		f.t.Fatalf("list %d %s", rec.Code, rec.Body.String())
 	}

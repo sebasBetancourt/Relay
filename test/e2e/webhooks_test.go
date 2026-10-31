@@ -169,6 +169,9 @@ func (f *flow) postWebhook(provider, secret, number string) *httptest.ResponseRe
 		hdr["X-Goog-Message-Number"] = number
 	}
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}

@@ -29,6 +29,7 @@ import (
 	"github.com/sebasBetancourt/relay/internal/queue/natsq"
 	"github.com/sebasBetancourt/relay/internal/store"
 	"github.com/sebasBetancourt/relay/internal/sync"
+	"github.com/sebasBetancourt/relay/internal/testutil/contract"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakegoogle"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakemicrosoft"
 	"github.com/sebasBetancourt/relay/internal/testutil/fakeoauth"
@@ -210,12 +211,17 @@ func (f *flow) buildRouter(pool *pgxpool.Pool) http.Handler {
 		oauthSvc.UseSync(ss)
 		f.syncSvc = ss
 	}
-	return httpapi.NewRouter(httpapi.Deps{
+	spec, err := contract.Default()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	// Every scenario also checks each response against api/openapi.yaml.
+	return spec.Wrap(f.t, httpapi.NewRouter(httpapi.Deps{
 		Log: discardLogger(), DB: pool, Tenants: store.NewTenants(pool), Env: apikey.EnvTest,
 		Connect: oauthSvc, Callback: oauthSvc, Calendar: calSvc,
 		CalendarWrite: calSvc, Idempotency: store.NewIdempotency(pool),
 		Accounts: accounts, Disconnect: oauthSvc, Webhooks: hooks, RateLimit: f.rateLimit,
-	})
+	}))
 }
 
 // replica is a second API instance: its own pool, services and caches,
