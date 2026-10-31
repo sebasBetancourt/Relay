@@ -55,6 +55,22 @@ Integration and e2e tests run against **stateful fake providers**, so CI needs n
 
 `test/e2e` runs every scenario (happy path, invalid state, expired-token refresh, revoked refresh) for both Google and Microsoft. It also covers Microsoft-only cases (refresh rotation, two API replicas refreshing at once, paging, `interaction_required`, no mailbox) and the accounts lifecycle.
 
+## The API contract
+
+`api/openapi.yaml` is the contract and the code is the behavior: nothing is generated from the spec, and tests keep the two together ([ADR 0011](adr/0011-contract-tests.md)).
+
+- Tests build routers through `contract.Spec.Wrap` (`internal/testutil/contract`). Each response is checked for a documented status, `Content-Type` and body, plus an `X-Request-ID`. Undocumented fields and query parameters fail, and so does a request the server accepted that the spec would refuse.
+- `TestRoutesMatchTheSpec` fails if a route is served but not documented, or documented but not served.
+- A new route or error needs its spec entry and a test that reaches it: an answer no test triggers is an answer nobody validates.
+
+The published reference comes from the same file. To preview it:
+
+```bash
+npx --yes @redocly/cli@1 build-docs api/openapi.yaml -o /tmp/relay-docs.html
+```
+
+`info.version` must match the release tag, or the release workflow stops.
+
 ## Project layout
 
 Packages are organized by responsibility, not by layer ([ADR 0004](adr/0004-project-layout.md)). Everything under `internal/` can only be imported by this module.
@@ -80,7 +96,7 @@ internal/
   queue/                    job contract (publish, consume, dead letters)
     natsq/                  NATS JetStream: RELAY_JOBS, RELAY_DLQ, backoff, drain
   buildinfo/                version stamped at build time
-  testutil/                 stateful fake providers for tests (fakeoauth, fakegoogle, fakemicrosoft)
+  testutil/                 fake providers (fakeoauth, fakegoogle, fakemicrosoft) and the API contract checker (contract)
 test/e2e/                   end-to-end flow suite
 migrations/                 SQL migrations (golang-migrate)
 api/openapi.yaml            OpenAPI 3.1 contract

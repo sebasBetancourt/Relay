@@ -164,7 +164,7 @@ Without that consent, a write answers **403** with the way out:
 The same body works for both providers:
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $(cat acme.key)" -H "Idempotency-Key: $(uuidgen)" \
+curl -s -X POST -H "Authorization: Bearer $(cat acme.key)" -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
   "localhost:8080/v1/calendars/$ACCOUNT_ID/events" -d '{
     "title": "Standup",
     "start": "2026-11-02T09:00:00-05:00",

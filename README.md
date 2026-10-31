@@ -137,7 +137,8 @@ All `/v1` routes except the OAuth callback and the webhook endpoints take `Autho
 | `GET` | `/healthz`, `/readyz` | Liveness and readiness probes |
 
 - **[API guide](docs/api.md)**: every endpoint with `curl` examples, paging and the full error table.
-- **[OpenAPI 3.1 spec](api/openapi.yaml)**: the formal contract, ready for Swagger UI, Postman or client generators.
+- **[API reference](https://sebasbetancourt.github.io/Relay/)**: browsable docs, published from the spec.
+- **[OpenAPI 3.1 spec](api/openapi.yaml)**: the formal contract, ready for Swagger UI, Postman or client generators. Tests check every response against it, so it cannot drift from the code.
 
 ## Rate limits
 
@@ -165,7 +166,7 @@ Set through environment variables (see [`.env.example`](.env.example)). The API 
 
 ## Documentation
 
-- [API guide](docs/api.md) and [OpenAPI spec](api/openapi.yaml)
+- [API guide](docs/api.md), [API reference](https://sebasbetancourt.github.io/Relay/) and [OpenAPI spec](api/openapi.yaml)
 - Provider setup: [Google](docs/google-cloud-setup.md), [Microsoft Entra ID](docs/microsoft-setup.md)
 - [Design](docs/design.md) and [architecture decisions](docs/adr/)
 - [Development](docs/development.md): build, tests and project layout
