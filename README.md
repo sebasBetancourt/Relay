@@ -140,6 +140,15 @@ All `/v1` routes except the OAuth callback and the webhook endpoints take `Autho
 - **[API reference](https://sebasbetancourt.github.io/Relay/)**: browsable docs, published from the spec.
 - **[OpenAPI 3.1 spec](api/openapi.yaml)**: the formal contract, ready for Swagger UI, Postman or client generators. Tests check every response against it, so it cannot drift from the code.
 
+## Project status
+
+`/v1` is stable: it only breaks in a `/v2`, as the [compatibility policy](docs/api.md#compatibility) explains.
+
+There is no hosted Relay: you run your own instance, with your own Google and Microsoft apps. Two limits come from those providers, not from the code:
+
+- **Google:** an app in Testing mode takes at most 100 test users, and their refresh tokens expire after 7 days. Google's verification removes both, and needs your own domain and a privacy policy.
+- **Microsoft:** users see an "unverified" notice until [publisher verification](https://learn.microsoft.com/en-us/entra/identity-platform/publisher-verification-overview) is done.
+
 ## Rate limits
 
 Each tenant has a request budget (600 per minute with a burst of 100 by default, adjustable per tenant) enforced in Redis, so it holds across replicas and one noisy customer cannot starve the others. Over the limit, clients get `429` with `Retry-After` and standard `RateLimit` headers. Details in the [API guide](docs/api.md#rate-limits).
@@ -175,6 +184,7 @@ Set through environment variables (see [`.env.example`](.env.example)). The API 
 - Provider setup: [Google](docs/google-cloud-setup.md), [Microsoft Entra ID](docs/microsoft-setup.md)
 - [Design](docs/design.md) and [architecture decisions](docs/adr/)
 - [Deploy](docs/deploy.md): your own instance on Fly.io
+- [Upgrade from 0.1 to 1.0](docs/upgrade-0.1-to-1.0.md)
 - [Development](docs/development.md): build, tests and project layout
 - [Secret scanning](docs/secret-scanning.md): how leaked API keys are detected
 

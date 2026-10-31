@@ -1,5 +1,7 @@
 # Deploy Relay
 
+> This guide has not yet been run end to end on Fly.io. Each piece was tested locally, so expect to adjust details, and open an issue if a step fails.
+
 This guide runs Relay on [Fly.io](https://docs.fly.io/) with a public HTTPS address, private Postgres and NATS, and daily encrypted backups. [ADR 0012](adr/0012-deploy-on-fly.md) explains the choices. Any host that runs containers works: Relay needs Postgres, the env vars in the [README](../README.md#configuration), and `relay migrate` before each new version.
 
 Fly has no free tier. At the time of writing, these three small machines and two 1 GB volumes cost about **$8 per month** in `iad`. See [current pricing](https://docs.fly.io/about/pricing).
@@ -95,7 +97,7 @@ fly deploy --ha=false
 This builds from your checkout. Once a release exists, pin it instead, and never use `latest`:
 
 ```bash
-fly deploy --ha=false --image ghcr.io/sebasbetancourt/relay:v0.2.0
+fly deploy --ha=false --image ghcr.io/sebasbetancourt/relay:v1.0.0
 ```
 
 ## 5. Register the redirect URIs
