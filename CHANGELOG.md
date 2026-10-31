@@ -6,6 +6,16 @@ All notable changes to Relay are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-31
+
+The calendar is complete: real-time changes, writes, rate limits, and a stable contract. From this release, `/v1` does not break without a `/v2` ([policy](docs/api.md#compatibility)). Coming from v0.1? Read the [upgrade guide](docs/upgrade-0.1-to-1.0.md).
+
+### Changed
+
+- **Breaking:** `GET /v1/accounts` pages like the events route: `max_results`, `page_token` and `next_page_token` replace `limit`, `cursor` and `next_cursor`.
+- **Breaking:** the code for a server failure is `internal_error`, in place of `internal error`.
+- Events now include `version`.
+
 ### Added
 
 - Deployment on Fly.io: `fly.toml` for the API, private Postgres and NATS, `docs/deploy.md`, and a daily encrypted backup workflow ([ADR 0012](docs/adr/0012-deploy-on-fly.md)).
@@ -22,9 +32,15 @@ All notable changes to Relay are documented here. The format follows
 
 ### Fixed
 
+- A panic answers the documented JSON error instead of plain text.
 - The spec now documents `invalid_query` on `GET /v1/connect/{provider}`, and the webhooks' plain-text `429` and `503`, their `400` and the `lifecycle` bodies.
 - `/healthz`, `/readyz` and empty Graph webhook answers set their `Content-Type` instead of leaving it to sniffing.
 - A too-long `Idempotency-Key` answers `400 invalid_idempotency_key`.
+
+### Known limitations
+
+- There is no hosted instance or public demo: `docs/deploy.md` runs your own, and that guide has not yet been exercised on Fly.io.
+- The Google app is in Testing mode and Microsoft publisher verification is pending. See the [README](README.md#project-status).
 
 ## [0.1.0] - 2026-10-20
 
@@ -78,5 +94,6 @@ First public release: one API for Google Calendar and Outlook.
 - All client errors on `/v1` return the same `401` body; API keys, tokens, states and verifiers are never logged.
 - `golang.org/x/text` upgraded to v0.41.0 (GO-2026-6629, GO-2026-5970).
 
-[Unreleased]: https://github.com/sebasBetancourt/Relay/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sebasBetancourt/Relay/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/sebasBetancourt/Relay/releases/tag/v1.0.0
 [0.1.0]: https://github.com/sebasBetancourt/Relay/releases/tag/v0.1.0
