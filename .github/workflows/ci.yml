@@ -76,7 +76,7 @@ jobs:
       - name: Lint
         # v6 + "latest" installs golangci-lint v1 (Go ≤1.24 binary), which cannot
         # lint modules with `go 1.25`. Action v8 + golangci-lint v2.15+ is built with Go ≥1.25.
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15.0
 
