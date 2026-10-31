@@ -1,0 +1,29 @@
+name: Links
+
+# Checks every link in the docs. Google and Microsoft move pages on their own
+# schedule, so a broken link warns on a pull request and fails only the weekly run.
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Mondays
+  pull_request:
+    paths:
+      - "**.md"
+      - lychee.toml
+      - .github/workflows/links.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: --config lychee.toml './*.md' './docs/**/*.md'
+          fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

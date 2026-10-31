@@ -1,0 +1,22 @@
+# Link check for the docs. See .github/workflows/links.yml.
+
+# Also check #anchors, inside the repo and out.
+include_fragments = "full"
+
+max_retries = 3
+timeout = 30
+
+# Rate limits are the host's problem, not a broken link.
+accept = ["200..=299", "429"]
+
+exclude = [
+  # Local addresses and placeholders in examples.
+  '^https?://localhost',
+  '^https?://127\.0\.0\.1',
+  '^https://relay\.example',
+  # Answers only to a signed-in browser.
+  '^https://console\.cloud\.google\.com',
+  '^https://entra\.microsoft\.com',
+  '^https://portal\.azure\.com',
+  '^https://myaccount\.google\.com',
+]
