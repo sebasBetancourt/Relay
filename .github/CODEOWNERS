@@ -1,0 +1,8 @@
+# GitHub asks these owners to review every pull request that touches a path.
+# The last matching line wins.
+*                @sebasBetancourt
+
+# Sensitive: token encryption and the OAuth flow. A mistake here exposes user
+# accounts, so these paths always get a careful review.
+/internal/vault/ @sebasBetancourt
+/internal/oauth/ @sebasBetancourt
