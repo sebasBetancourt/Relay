@@ -131,6 +131,48 @@ func TestCreateEventRefusesUnknownFields(t *testing.T) {
 	}
 }
 
+func TestCreateEventFriendlyUnknownField(t *testing.T) {
+	key := apikey.Generate(apikey.EnvTest)
+	cal := &fakeWrites{}
+	rec := send(writesRouter(t, cal, nil, key), http.MethodPost, "/v1/calendars/a1/events", `{"title":"x","atendees":["a@b.co"]}`, key, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "invalid_body") || !strings.Contains(body, `unknown field \"atendees\"`) {
+		t.Fatalf("body = %s", body)
+	}
+	if strings.Contains(body, "json:") || strings.Contains(body, "Go") {
+		t.Fatalf("exposes Go wording: %s", body)
+	}
+}
+
+func TestCreateEventFriendlyWrongType(t *testing.T) {
+	key := apikey.Generate(apikey.EnvTest)
+	cal := &fakeWrites{}
+	rec := send(writesRouter(t, cal, nil, key), http.MethodPost, "/v1/calendars/a1/events", `{"title":"x","start":123}`, key, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "invalid_body") || !strings.Contains(body, "start must be a string") {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestCreateEventFriendlyBrokenJSON(t *testing.T) {
+	key := apikey.Generate(apikey.EnvTest)
+	cal := &fakeWrites{}
+	rec := send(writesRouter(t, cal, nil, key), http.MethodPost, "/v1/calendars/a1/events", `{"title":"x",}`, key, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "invalid_body") || !strings.Contains(body, "body must be valid JSON") {
+		t.Fatalf("body = %s", body)
+	}
+}
+
 func TestCreateEventBodyTooLarge(t *testing.T) {
 	key := apikey.Generate(apikey.EnvTest)
 	rec := send(writesRouter(t, &fakeWrites{}, nil, key), http.MethodPost, "/v1/calendars/a1/events", strings.Repeat("x", maxEventBody+1), key, nil)
